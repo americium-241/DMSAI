@@ -1,2 +1,2 @@
-storage_root: "C:/dev/DMSAI/data/storage/documents"
-symlink_root: "C:/dev/DMSAI/data/storage/by_date"
+storage_root: "./data/storage/documents"
+symlink_root: "./data/storage/by_date"

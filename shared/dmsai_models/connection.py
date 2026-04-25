@@ -10,7 +10,7 @@ from sqlmodel import SQLModel, Session, create_engine
 
 _engine = None
 
-DEFAULT_DB_URL = "sqlite:///C:/dev/DMSAI/data/dmsai.db"
+DEFAULT_DB_URL = "sqlite:///./data/dmsai.db"
 
 
 def get_engine():

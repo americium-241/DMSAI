@@ -1,5 +1,5 @@
-watch_directory: "C:/dev/DMSAI/data/inbox"
-processed_directory: "C:/dev/DMSAI/data/processed"
+watch_directory: "./data/inbox"
+processed_directory: "./data/processed"
 poll_interval_seconds: 5
 
 supported_extensions:
