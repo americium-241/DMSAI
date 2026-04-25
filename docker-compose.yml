@@ -159,7 +159,7 @@ services:
     ports:
       - "5173:5173"
     environment:
-      VITE_API_URL: http://localhost:8080
+      API_TARGET: http://api_gateway:8080
     depends_on:
       - api_gateway
     networks:

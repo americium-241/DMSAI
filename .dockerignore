@@ -1,0 +1,47 @@
+# Runtime data — never bake into the image
+data/
+logs/
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+internal_queue.db
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+.venv_test/
+dist/
+build/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Frontend build artifacts and deps — rebuilt inside the container
+frontend/node_modules/
+frontend/dist/
+
+# Secrets and local config — injected at runtime via env_file
+.env
+.env.*
+!.env.example
+.jwt_secret
+
+# Git history
+.git/
+.gitignore
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.cursor/
+*.code-workspace
+
+# Screenshots and generated docs — not needed at runtime
+docs/
+tools/

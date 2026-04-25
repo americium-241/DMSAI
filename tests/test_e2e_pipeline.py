@@ -6,16 +6,14 @@ Tests every stage of the document processing pipeline in order:
   2. Conversion (image -> PDF)
   3. Storage (write PDF to disk, update DB)
   4. OCR (Vision LLM)
-  5. Embedding (LLM-provider dense vector)
-  6. Classification (LLM-mocked)
-  7. Entity extraction (LLM-mocked)
-  8. Entity resolution (identifier matching, name similarity)
-  9. Field extraction (LLM-mocked) + pipeline confidence
- 10. Multi-document entity resolution (same entity across docs)
- 11. Final DB state verification
+  5. Classification (LLM-mocked)
+  6. Entity extraction (LLM-mocked)
+  7. Entity resolution (identifier matching, name similarity)
+  8. Field extraction (LLM-mocked) + pipeline confidence
+  9. Multi-document entity resolution (same entity across docs)
+ 10. Final DB state verification
 
 All LLM calls are mocked with realistic deterministic responses.
-LLM calls are mocked where needed; OCR and embeddings use the configured LLM provider in full integration runs.
 """
 
 from __future__ import annotations
@@ -31,7 +29,6 @@ from sqlmodel import select
 
 from dmsai_models import (
     Document,
-    DocumentEmbedding,
     DocumentField,
     DocumentEntity,
     Entity,
@@ -48,7 +45,6 @@ from conftest import (
     conversion_logic,
     storage_logic,
     ocr_logic,
-    embedding_logic,
     classification_logic,
     entity_extraction_logic,
     entity_resolution_logic,
@@ -88,7 +84,6 @@ async def _run_up_to_ocr(doc_path: Path, doc_bytes: bytes) -> dict:
 
 async def _run_up_to_classification(doc_path: Path, doc_bytes: bytes) -> dict:
     payload = await _run_up_to_ocr(doc_path, doc_bytes)
-    payload = await embedding_logic.process_embedding(payload)
     payload = await classification_logic.process_classification(payload)
     return payload
 
@@ -209,37 +204,7 @@ class TestOCR:
 
 
 # ---------------------------------------------------------------------------
-# 5. Embedding
-# ---------------------------------------------------------------------------
-
-class TestEmbedding:
-
-    @pytest.mark.asyncio
-    async def test_embedding_stored(self, first_doc: Path, first_doc_bytes: bytes):
-        payload = await _run_up_to_ocr(first_doc, first_doc_bytes)
-        payload = await embedding_logic.process_embedding(payload)
-
-        assert "embedding_completed" in payload["history"]
-        assert "embedding_vector" in payload
-        assert len(payload["embedding_vector"]) > 100
-
-        doc = _get_doc(payload["workflow_id"])
-        assert doc is not None
-        assert doc.status == "EMBEDDED"
-
-        with get_session() as s:
-            emb = s.exec(
-                select(DocumentEmbedding).where(
-                    DocumentEmbedding.document_id == payload["workflow_id"]
-                )
-            ).first()
-        assert emb is not None
-        assert emb.dense_vector is not None
-        assert emb.combined_vector is not None
-
-
-# ---------------------------------------------------------------------------
-# 6. Classification (LLM mocked)
+# 5. Classification (LLM mocked)
 # ---------------------------------------------------------------------------
 
 class TestClassification:

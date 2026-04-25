@@ -96,7 +96,6 @@ def _node_src(node_name: str, filename: str) -> str:
 ingestion_logic = _load_module("ingestion_logic", _node_src("ingestion_node", "ingestion_logic.py"))
 conversion_logic = _load_module("conversion_logic", _node_src("conversion_node", "conversion_logic.py"))
 storage_logic = _load_module("storage_logic", _node_src("storage_node", "storage_logic.py"))
-embedding_logic = _load_module("embedding_logic", _node_src("embedding_node", "embedding_logic.py"))
 classification_logic = _load_module("classification_logic", _node_src("classification_node", "classification_logic.py"))
 entity_extraction_logic = _load_module("entity_extraction_logic", _node_src("entity_extraction_node", "entity_extraction_logic.py"))
 entity_resolution_logic = _load_module("entity_resolution_logic", _node_src("entity_resolution_node", "entity_resolution_logic.py"))

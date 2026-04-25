@@ -158,7 +158,6 @@ const PIPELINE_STAGES: { id: string; short: string }[] = [
   { id: 'conversion', short: 'Convert' },
   { id: 'storage', short: 'Store' },
   { id: 'ocr', short: 'OCR' },
-  { id: 'embedding', short: 'Embed' },
   { id: 'entity_extraction', short: 'Entities' },
   { id: 'classification', short: 'Class' },
   { id: 'entity_resolution', short: 'Resolve' },

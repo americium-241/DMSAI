@@ -6,9 +6,12 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
+    host: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        // In Docker, set API_TARGET=http://api_gateway:8080 via docker-compose.
+        // Locally, defaults to http://localhost:8080.
+        target: process.env.API_TARGET ?? 'http://localhost:8080',
         changeOrigin: true,
       },
     },

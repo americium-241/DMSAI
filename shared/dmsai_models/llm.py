@@ -17,7 +17,7 @@ _CACHE_TTL = 30.0  # seconds
 
 
 def _refresh_config() -> dict[str, str]:
-    """Load all LLM + OCR + embedding settings from SystemConfig (cached for _CACHE_TTL)."""
+    """Load all LLM + OCR settings from SystemConfig (cached for _CACHE_TTL)."""
     global _config_cache, _cache_ts
     now = time.time()
     if _config_cache and (now - _cache_ts) < _CACHE_TTL:
@@ -29,7 +29,7 @@ def _refresh_config() -> dict[str, str]:
         with Session(get_engine()) as session:
             rows = session.exec(
                 select(SystemConfig).where(
-                    SystemConfig.category.in_(["llm", "ocr", "embedding"])
+                    SystemConfig.category.in_(["llm", "ocr"])
                 )
             ).all()
             _config_cache = {r.key: r.value for r in rows}
@@ -175,76 +175,6 @@ async def _vision_ollama(
         resp.raise_for_status()
         data = resp.json()
         return data.get("message", {}).get("content", "")
-
-
-# ---------------------------------------------------------------------------
-# Embedding API (dense vector via Ollama or LiteLLM)
-# ---------------------------------------------------------------------------
-
-async def call_embedding(text: str, timeout: float = 120.0) -> list[float]:
-    """
-    Get a dense embedding vector for the given text.
-    Dispatches to Ollama /api/embeddings or LiteLLM /embeddings based on
-    embedding_provider SystemConfig (falls back to llm_provider).
-    """
-    cfg = _refresh_config()
-    provider = cfg.get("embedding_provider", "") or cfg.get("llm_provider", "ollama")
-    model = cfg.get("embedding_model", "nomic-embed-text")
-
-    if provider == "litellm":
-        return await _embedding_litellm(text, model, timeout, cfg)
-    return await _embedding_ollama(text, model, timeout, cfg)
-
-
-async def _embedding_ollama(
-    text: str, model: str, timeout: float, cfg: dict[str, str],
-) -> list[float]:
-    base_url = cfg.get("ollama_base_url", "http://localhost:11434")
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        # Try the newer /api/embed endpoint first (Ollama >= 0.2), fall back to legacy
-        try:
-            resp = await client.post(
-                f"{base_url}/api/embed",
-                json={"model": model, "input": text},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            embeddings = data.get("embeddings", [[]])
-            return embeddings[0] if embeddings else []
-        except httpx.HTTPStatusError:
-            pass
-
-        resp = await client.post(
-            f"{base_url}/api/embeddings",
-            json={"model": model, "prompt": text},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("embedding", [])
-
-
-async def _embedding_litellm(
-    text: str, model: str, timeout: float, cfg: dict[str, str],
-) -> list[float]:
-    base_url = cfg.get("litellm_base_url", "").rstrip("/")
-    if not base_url:
-        raise RuntimeError("litellm_base_url is not configured")
-    api_key = cfg.get("litellm_api_key", "")
-
-    url = f"{base_url}/embeddings"
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    body = {"model": model, "input": text}
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(url, json=body, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
-        items = data.get("data", [])
-        if items:
-            return items[0].get("embedding", [])
-        return []
 
 
 async def _vision_litellm(

@@ -3,7 +3,7 @@ import { RefreshCw, Circle, ArrowRight } from 'lucide-react';
 import { api, type NodeHealth } from '../api';
 
 const NODE_ORDER = [
-  'ingestion', 'conversion', 'storage', 'ocr', 'embedding',
+  'ingestion', 'conversion', 'storage', 'ocr',
   'entity_extraction', 'classification', 'entity_resolution', 'field_extraction',
 ];
 
@@ -12,7 +12,6 @@ const NODE_LABELS: Record<string, string> = {
   conversion: 'Conversion',
   storage: 'Storage',
   ocr: 'OCR',
-  embedding: 'Embedding',
   entity_extraction: 'Entity Extraction',
   classification: 'Classification',
   entity_resolution: 'Entity Resolution',

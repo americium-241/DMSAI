@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # DMSAI native installer — Linux / macOS
 # Usage: bash scripts/install.sh
 set -euo pipefail
