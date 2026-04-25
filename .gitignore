@@ -1,0 +1,57 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Local secrets and machine-specific config
+.env
+.env.*
+!.env.example
+.jwt_secret
+
+# Build artifacts
+dist/
+build/
+.venv/
+.venv_test/
+frontend/dist/
+
+# Runtime databases and queues
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+internal_queue.db
+
+# Runtime data and local model artifacts
+data/**
+!data/
+!data/.gitkeep
+!data/storage/
+!data/storage/.gitkeep
+!data/storage/documents/
+!data/storage/documents/.gitkeep
+!data/inbox/
+!data/inbox/.gitkeep
+!data/processed/
+!data/processed/.gitkeep
+data/storage/documents/*
+!data/storage/documents/.gitkeep
+data/inbox/*
+!data/inbox/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/models/
+
+# Logs and dependency caches
+logs/
+*.log
+node_modules/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

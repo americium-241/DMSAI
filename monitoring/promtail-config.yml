@@ -1,0 +1,45 @@
+# Promtail Configuration for DecentraFlow
+#
+# Scrapes structured JSON log files written by DecentraFlow nodes
+# and pushes them to Loki.  This is the "pull" side of the decentralized
+# logging strategy: nodes write local files, Promtail ships them.
+#
+# Mount node log directories into the container (see docker-compose.yml).
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: decentraflow-nodes
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: decentraflow
+          __path__: /var/log/decentraflow/**/*.log
+
+    # Parse the structured JSON log lines written by JsonFormatter
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            service: service
+            environment: environment
+            workflow_id: workflow_id
+
+      - labels:
+          level:
+          service:
+          environment:
+
+      - timestamp:
+          source: timestamp
+          format: "2006-01-02T15:04:05.000Z"
+

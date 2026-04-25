@@ -1,0 +1,9 @@
+vllm_settings:
+  enabled: true
+  api_url: "http://localhost:11434/api/chat"
+  model: "gemma3:27b"
+  confidence_threshold: 0.7
+  prompt: |
+    Extract ALL text from this document image exactly as it appears.
+    Preserve the layout, line breaks, and formatting as closely as possible.
+    Return only the extracted text, nothing else.

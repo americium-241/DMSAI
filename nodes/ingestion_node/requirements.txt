@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+sqlmodel
+aiosqlite
+httpx
+pyyaml
+python-multipart
+watchdog
+Pillow

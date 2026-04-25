@@ -1,0 +1,11 @@
+node_name: "field_extraction_node"
+environment: "dev"
+
+next_nodes: []  # terminal node
+
+max_retries: 3
+backoff_base: 2.0
+max_queue_depth: 500
+max_workers: 2
+task_timeout: 600
+shutdown_timeout: 60

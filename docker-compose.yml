@@ -1,0 +1,57 @@
+# DMSAI — Infrastructure Stack
+# Loki (log aggregation) + Promtail (log scraper) + Grafana (visualization)
+#
+# Usage:
+#   docker compose up -d
+#
+# Grafana UI:  http://localhost:3000
+# Set GRAFANA_ADMIN_USER and GRAFANA_ADMIN_PASSWORD in your shell/.env before use.
+# Loki API:    http://localhost:3100
+# Ollama API:  http://localhost:11434 (running on host, not managed here)
+
+services:
+
+  # --- Log Aggregation --------------------------------------------------
+  loki:
+    image: grafana/loki:3.4.3
+    container_name: dmsai-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./monitoring/loki-config.yml:/etc/loki/local-config.yaml
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+
+  # --- Log Scraper (pulls JSON logs from node directories) ---------------
+  promtail:
+    image: grafana/promtail:3.4.3
+    container_name: dmsai-promtail
+    volumes:
+      - ./monitoring/promtail-config.yml:/etc/promtail/config.yml
+      - ./nodes:/var/log/decentraflow:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  # --- Log + Metrics Visualization ---------------------------------------
+  grafana:
+    image: grafana/grafana:11.5.2
+    container_name: dmsai-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-change-me}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+volumes:
+  loki-data:
+  grafana-data:

@@ -1,0 +1,19 @@
+llm_settings:
+  api_url: "http://localhost:11434/api/chat"
+  model: "gemma3:27b"
+
+categories:
+  - name: "invoice"
+    definition: "A commercial document issued by a seller to a buyer, detailing products or services provided and the amounts owed"
+  - name: "receipt"
+    definition: "A document acknowledging that a payment has been received for goods or services"
+  - name: "contract"
+    definition: "A legally binding agreement between two or more parties outlining terms and obligations"
+  - name: "letter"
+    definition: "A written message addressed to a person or organization, formal or informal"
+  - name: "report"
+    definition: "A formal document presenting information, findings, analysis, or recommendations"
+  - name: "form"
+    definition: "A structured document with fields to be filled in, such as applications or registrations"
+  - name: "other"
+    definition: "A document that does not fit any of the above categories"

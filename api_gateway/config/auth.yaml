@@ -1,0 +1,49 @@
+# =============================================================================
+# DMSAI Authentication Configuration
+# =============================================================================
+# Values in this file are loaded into SystemConfig on startup and can then
+# be overridden at runtime from the admin UI (System Config page).
+# Remove or leave empty any setting you don't want to pre-seed.
+
+# ---------------------------------------------------------------------------
+# Registration & password policy
+# ---------------------------------------------------------------------------
+auth:
+  registration_open: true
+  email_verification_enabled: false
+  email_verification_token_expiry_hours: 24
+  password_min_length: 8
+  password_require_uppercase: true
+  password_require_digit: true
+  max_failed_logins: 5
+  lockout_duration_minutes: 15
+
+# ---------------------------------------------------------------------------
+# SMTP (required for email verification)
+# ---------------------------------------------------------------------------
+email:
+  smtp_host: ""
+  smtp_port: 587
+  smtp_user: ""
+  smtp_password: ""
+  smtp_use_tls: true
+  smtp_from_email: "noreply@dmsai.local"
+  smtp_from_name: "DMSAI"
+
+# ---------------------------------------------------------------------------
+# LDAP / Active Directory
+# ---------------------------------------------------------------------------
+ldap:
+  ldap_enabled: false
+  ldap_server_url: "ldap://localhost:389"
+  ldap_bind_dn: ""
+  ldap_bind_password: ""
+  ldap_search_base: "dc=example,dc=com"
+  ldap_user_filter: "(uid={username})"
+  ldap_email_attribute: "mail"
+  ldap_fullname_attribute: "cn"
+  ldap_use_tls: false
+  ldap_require_group: ""
+  ldap_group_attribute: "memberOf"
+  ldap_default_organization: "LDAP Users"
+  ldap_default_role: "user"

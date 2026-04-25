@@ -1,0 +1,12 @@
+watch_directory: "C:/dev/DMSAI/data/inbox"
+processed_directory: "C:/dev/DMSAI/data/processed"
+poll_interval_seconds: 5
+
+supported_extensions:
+  - ".png"
+  - ".jpg"
+  - ".jpeg"
+  - ".tiff"
+  - ".tif"
+  - ".bmp"
+  - ".pdf"

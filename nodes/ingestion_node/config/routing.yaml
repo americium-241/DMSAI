@@ -1,0 +1,14 @@
+node_name: "ingestion_node"
+environment: "dev"
+
+next_nodes:
+  - "http://localhost:8011"  # conversion_node
+
+max_retries: 3
+backoff_base: 2.0
+max_queue_depth: 1000
+max_workers: 3
+health_check_interval: 30
+worker_poll_interval: 1.0
+task_timeout: 120
+shutdown_timeout: 30

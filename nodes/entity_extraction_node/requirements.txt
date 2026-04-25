@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+sqlmodel
+aiosqlite
+httpx
+pyyaml

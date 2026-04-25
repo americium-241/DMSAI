@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+sqlmodel
+aiosqlite
+httpx
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+pyyaml
+ldap3
+PyMuPDF
