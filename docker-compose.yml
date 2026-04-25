@@ -41,6 +41,9 @@ x-node-base: &node-base
     DMSAI_INBOX_DIR: /app/data/inbox
     DMSAI_PROCESSED_DIR: /app/data/processed
     DMSAI_MODELS_DIR: /app/data/models
+    # Point Ollama at the Docker host so containers can reach a locally-running Ollama.
+    # On Linux set OLLAMA_BASE_URL=http://172.17.0.1:11434 or use --profile ollama instead.
+    OLLAMA_BASE_URL: http://host.docker.internal:11434
   volumes:
     - app-data:/app/data
   networks:

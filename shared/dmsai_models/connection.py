@@ -267,10 +267,10 @@ Respond with ONLY a valid JSON object:
 
     defaults = [
         ("llm_provider", "ollama", "llm", "LLM provider: ollama or litellm"),
-        ("ollama_base_url", "http://localhost:11434", "llm", "Ollama server base URL"),
-        ("llm_model", "gemma3:27b", "llm", "Model name for Ollama"),
+        ("ollama_base_url", os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"), "llm", "Ollama server base URL"),
+        ("llm_model", os.environ.get("LLM_MODEL", "gemma3:27b"), "llm", "Model name for Ollama"),
         ("litellm_base_url", "http://localhost:4000", "llm", "LiteLLM proxy base URL"),
-        ("litellm_api_key", "", "llm", "API key for LiteLLM proxy"),
+        ("litellm_api_key", os.environ.get("GEMINI_API_KEY", ""), "llm", "API key for LiteLLM proxy"),
         ("litellm_model", "", "llm", "Model identifier for LiteLLM"),
         ("llm_temperature", "0.1", "llm", "Temperature used for text LLM calls"),
         ("llm_timeout_seconds", "300", "llm", "Timeout for text LLM calls"),

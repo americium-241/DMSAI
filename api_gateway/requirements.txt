@@ -5,7 +5,7 @@ aiosqlite
 httpx
 python-multipart
 python-jose[cryptography]
-passlib[bcrypt]
+bcrypt
 pyyaml
 ldap3
 PyMuPDF
