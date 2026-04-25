@@ -1,0 +1,14 @@
+node_name: "ingestion_node"
+environment: "docker"
+
+next_nodes:
+  - "http://conversion:8011"
+
+max_retries: 3
+backoff_base: 2.0
+max_queue_depth: 1000
+max_workers: 3
+health_check_interval: 30
+worker_poll_interval: 1.0
+task_timeout: 120
+shutdown_timeout: 30

@@ -698,7 +698,7 @@ async def update_system_config(key: str, body: SystemConfigUpdate, user: User = 
 async def restart_services(body: ServiceRestartRequest, user: User = Depends(require_admin)):
     allowed = {
         "ocr", "classification", "entity_extraction", "entity_resolution",
-        "field_extraction", "embedding", "litellm", "frontend",
+        "field_extraction", "litellm", "frontend",
     }
     services = sorted({svc for svc in body.services if svc in allowed})
     if not services:

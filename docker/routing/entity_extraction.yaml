@@ -1,8 +1,8 @@
-node_name: "embedding_node"
-environment: "dev"
+node_name: "entity_extraction_node"
+environment: "docker"
 
 next_nodes:
-  - "http://localhost:8015"  # entity_extraction_node
+  - "http://classification:8016"
 
 max_retries: 3
 backoff_base: 2.0

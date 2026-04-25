@@ -60,7 +60,6 @@ SERVICES: list[dict] = [
     {"name": "conversion",         "port": 8011, "kind": "node", "dir": "nodes/conversion_node"},
     {"name": "storage",            "port": 8012, "kind": "node", "dir": "nodes/storage_node"},
     {"name": "ocr",                "port": 8013, "kind": "node", "dir": "nodes/ocr_node"},
-    {"name": "embedding",          "port": 8014, "kind": "node", "dir": "nodes/embedding_node"},
     {"name": "entity_extraction",  "port": 8015, "kind": "node", "dir": "nodes/entity_extraction_node"},
     {"name": "classification",     "port": 8016, "kind": "node", "dir": "nodes/classification_node"},
     {"name": "entity_resolution",  "port": 8017, "kind": "node", "dir": "nodes/entity_resolution_node"},

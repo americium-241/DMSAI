@@ -1,0 +1,17 @@
+node_name: "ingestion_node"
+environment: "docker"
+
+# Docker-specific local_config for the ingestion watcher.
+# Paths must match the volume mount defined in docker-compose.yml.
+watch_directory: "/app/data/inbox"
+processed_directory: "/app/data/processed"
+poll_interval_seconds: 5
+
+supported_extensions:
+  - ".png"
+  - ".jpg"
+  - ".jpeg"
+  - ".tiff"
+  - ".tif"
+  - ".bmp"
+  - ".pdf"

@@ -1,0 +1,12 @@
+node_name: "conversion_node"
+environment: "docker"
+
+next_nodes:
+  - "http://storage:8012"
+
+max_retries: 3
+backoff_base: 2.0
+max_queue_depth: 1000
+max_workers: 3
+task_timeout: 120
+shutdown_timeout: 30

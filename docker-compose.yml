@@ -1,44 +1,231 @@
-# DMSAI — Infrastructure Stack
-# Loki (log aggregation) + Promtail (log scraper) + Grafana (visualization)
+# DMSAI — Full Application Stack
 #
-# Usage:
+# Usage (standard):
 #   docker compose up -d
 #
-# Grafana UI:  http://localhost:3000
-# Set GRAFANA_ADMIN_USER and GRAFANA_ADMIN_PASSWORD in your shell/.env before use.
-# Loki API:    http://localhost:3100
-# Ollama API:  http://localhost:11434 (running on host, not managed here)
+# With optional Ollama container:
+#   docker compose --profile ollama up -d
+#
+# With monitoring (Loki + Promtail + Grafana):
+#   docker compose --profile monitoring up -d
+#
+# All profiles:
+#   docker compose --profile ollama --profile monitoring up -d
+#
+# Prerequisites:
+#   cp .env.example .env   # then fill in secrets
+#
+# Frontend: http://localhost:5173
+# API:      http://localhost:8080
+# Health:   http://localhost:8080/api/pipeline/health
+# Grafana:  http://localhost:3000  (profile: monitoring)
+
+x-node-base: &node-base
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.node
+  env_file: .env
+  environment:
+    # Node-to-node URLs use Docker service names
+    INGESTION_NODE_URL: http://ingestion:8010
+    CONVERSION_NODE_URL: http://conversion:8011
+    STORAGE_NODE_URL: http://storage:8012
+    OCR_NODE_URL: http://ocr:8013
+    ENTITY_EXTRACTION_NODE_URL: http://entity_extraction:8015
+    CLASSIFICATION_NODE_URL: http://classification:8016
+    ENTITY_RESOLUTION_NODE_URL: http://entity_resolution:8017
+    FIELD_EXTRACTION_NODE_URL: http://field_extraction:8018
+    API_GATEWAY_URL: http://api_gateway:8080
+    DMSAI_DB_URL: sqlite:////app/data/dmsai.db
+    DMSAI_STORAGE_ROOT: /app/data/storage/documents
+    DMSAI_INBOX_DIR: /app/data/inbox
+    DMSAI_PROCESSED_DIR: /app/data/processed
+    DMSAI_MODELS_DIR: /app/data/models
+  volumes:
+    - app-data:/app/data
+  networks:
+    - dmsai
+  restart: unless-stopped
 
 services:
 
-  # --- Log Aggregation --------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Pipeline nodes
+  # ---------------------------------------------------------------------------
+
+  ingestion:
+    <<: *node-base
+    container_name: dmsai-ingestion
+    working_dir: /app/nodes/ingestion_node
+    command: uvicorn main:app --host 0.0.0.0 --port 8010
+    ports:
+      - "8010:8010"
+    volumes:
+      - app-data:/app/data
+      - ./docker/routing/ingestion.yaml:/app/nodes/ingestion_node/config/routing.yaml:ro
+      - ./docker/routing/ingestion_local.yaml:/app/nodes/ingestion_node/config/local_config.yaml:ro
+
+  conversion:
+    <<: *node-base
+    container_name: dmsai-conversion
+    working_dir: /app/nodes/conversion_node
+    command: uvicorn main:app --host 0.0.0.0 --port 8011
+    volumes:
+      - app-data:/app/data
+      - ./docker/routing/conversion.yaml:/app/nodes/conversion_node/config/routing.yaml:ro
+
+  storage:
+    <<: *node-base
+    container_name: dmsai-storage
+    working_dir: /app/nodes/storage_node
+    command: uvicorn main:app --host 0.0.0.0 --port 8012
+    volumes:
+      - app-data:/app/data
+      - ./docker/routing/storage.yaml:/app/nodes/storage_node/config/routing.yaml:ro
+
+  ocr:
+    <<: *node-base
+    container_name: dmsai-ocr
+    working_dir: /app/nodes/ocr_node
+    command: uvicorn main:app --host 0.0.0.0 --port 8013
+    volumes:
+      - app-data:/app/data
+      - ./docker/routing/ocr.yaml:/app/nodes/ocr_node/config/routing.yaml:ro
+
+  entity_extraction:
+    <<: *node-base
+    container_name: dmsai-entity-extraction
+    working_dir: /app/nodes/entity_extraction_node
+    command: uvicorn main:app --host 0.0.0.0 --port 8015
+    volumes:
+      - app-data:/app/data
+      - ./docker/routing/entity_extraction.yaml:/app/nodes/entity_extraction_node/config/routing.yaml:ro
+
+  classification:
+    <<: *node-base
+    container_name: dmsai-classification
+    working_dir: /app/nodes/classification_node
+    command: uvicorn main:app --host 0.0.0.0 --port 8016
+    volumes:
+      - app-data:/app/data
+      - ./docker/routing/classification.yaml:/app/nodes/classification_node/config/routing.yaml:ro
+
+  entity_resolution:
+    <<: *node-base
+    container_name: dmsai-entity-resolution
+    working_dir: /app/nodes/entity_resolution_node
+    command: uvicorn main:app --host 0.0.0.0 --port 8017
+    volumes:
+      - app-data:/app/data
+      - ./docker/routing/entity_resolution.yaml:/app/nodes/entity_resolution_node/config/routing.yaml:ro
+
+  field_extraction:
+    <<: *node-base
+    container_name: dmsai-field-extraction
+    working_dir: /app/nodes/field_extraction_node
+    command: uvicorn main:app --host 0.0.0.0 --port 8018
+    volumes:
+      - app-data:/app/data
+      - ./docker/routing/field_extraction.yaml:/app/nodes/field_extraction_node/config/routing.yaml:ro
+
+  # ---------------------------------------------------------------------------
+  # API Gateway
+  # ---------------------------------------------------------------------------
+
+  api_gateway:
+    <<: *node-base
+    container_name: dmsai-api-gateway
+    working_dir: /app/api_gateway
+    command: uvicorn main:app --host 0.0.0.0 --port 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      - ingestion
+      - ocr
+      - entity_extraction
+      - classification
+      - entity_resolution
+      - field_extraction
+
+  # ---------------------------------------------------------------------------
+  # Frontend (React dev server)
+  # ---------------------------------------------------------------------------
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    container_name: dmsai-frontend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:8080
+    depends_on:
+      - api_gateway
+    networks:
+      - dmsai
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Optional: Ollama (local LLM runtime)
+  # Enable with: docker compose --profile ollama up -d
+  # ---------------------------------------------------------------------------
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: dmsai-ollama
+    profiles:
+      - ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - dmsai
+    restart: unless-stopped
+    # After first start, pull your model:
+    #   docker exec dmsai-ollama ollama pull gemma3:27b
+
+  # ---------------------------------------------------------------------------
+  # Optional: Monitoring — Loki + Promtail + Grafana
+  # Enable with: docker compose --profile monitoring up -d
+  # ---------------------------------------------------------------------------
+
   loki:
     image: grafana/loki:3.4.3
     container_name: dmsai-loki
+    profiles:
+      - monitoring
     ports:
       - "3100:3100"
     volumes:
       - ./monitoring/loki-config.yml:/etc/loki/local-config.yaml
       - loki-data:/loki
     command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - dmsai
     restart: unless-stopped
 
-  # --- Log Scraper (pulls JSON logs from node directories) ---------------
   promtail:
     image: grafana/promtail:3.4.3
     container_name: dmsai-promtail
+    profiles:
+      - monitoring
     volumes:
       - ./monitoring/promtail-config.yml:/etc/promtail/config.yml
       - ./nodes:/var/log/decentraflow:ro
     command: -config.file=/etc/promtail/config.yml
     depends_on:
       - loki
+    networks:
+      - dmsai
     restart: unless-stopped
 
-  # --- Log + Metrics Visualization ---------------------------------------
   grafana:
     image: grafana/grafana:11.5.2
     container_name: dmsai-grafana
+    profiles:
+      - monitoring
     ports:
       - "3000:3000"
     environment:
@@ -50,8 +237,20 @@ services:
       - grafana-data:/var/lib/grafana
     depends_on:
       - loki
+    networks:
+      - dmsai
     restart: unless-stopped
 
+# ---------------------------------------------------------------------------
+# Volumes and networks
+# ---------------------------------------------------------------------------
+
 volumes:
+  app-data:          # database, file storage, inbox, processed
+  ollama-data:       # Ollama model weights
   loki-data:
   grafana-data:
+
+networks:
+  dmsai:
+    driver: bridge

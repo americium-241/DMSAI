@@ -1,10 +1,124 @@
 # DMSAI
 
-DMSAI is a self-hosted, AI-assisted document management system. It ingests documents, converts them to a normalized PDF representation, stores them, extracts OCR text with a vision LLM, builds dense embeddings, classifies documents with canonical category labels, resolves entities, and extracts structured fields.
+DMSAI is a self-hosted, AI-assisted document management system. It ingests documents, converts them to a normalized PDF representation, stores them, extracts OCR text with a vision LLM, classifies documents with canonical category labels, resolves entities, and extracts structured fields.
 
 The backend is a set of local FastAPI microservices built on [DecentraFlow](README_decentraflow.md). The frontend is a React + Vite application served separately from the API gateway.
 
 > Start this repository as private. Review secrets, license, and deployment settings before making it public.
+
+## Getting Started
+
+### Option A — Docker Compose (recommended)
+
+Docker Compose builds all services from source with a single command. No Python or Node.js installation is required.
+
+**Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) and an LLM provider.
+
+```bash
+# 1. Clone and enter the repository
+git clone https://github.com/americium-241/DMSAI.git
+cd DMSAI
+
+# 2. Create your local config
+cp .env.example .env
+# Edit .env — at minimum set:
+#   DMSAI_JWT_SECRET=<long random string>
+#   DMSAI_INTERNAL_API_KEY=<long random string>
+#   GEMINI_API_KEY=<your key>   # if using LiteLLM/Gemini
+
+# 3. Start the full stack
+docker compose up -d
+```
+
+The app is ready at **http://localhost:5173** once all containers are healthy.
+
+Default login: `admin@dmsai.com` / `admin123` (change the password after first login).
+
+**Optional profiles:**
+
+```bash
+# Run Ollama inside Docker (pulls models into a persistent volume)
+docker compose --profile ollama up -d
+# Then pull a model once:
+docker exec dmsai-ollama ollama pull gemma3:27b
+
+# Enable Grafana + Loki monitoring
+docker compose --profile monitoring up -d
+```
+
+**Useful commands:**
+
+```bash
+docker compose ps                        # service status
+docker compose logs -f ocr               # tail a service log
+docker compose down                      # stop all
+docker compose down -v                   # stop + wipe all data
+docker compose pull && docker compose up -d --build   # rebuild after code changes
+```
+
+---
+
+### Option B — Native (Windows / PowerShell)
+
+**Prerequisites:** Python 3.11+, Node.js 18+, and an LLM provider (Ollama or LiteLLM).
+
+```powershell
+git clone https://github.com/americium-241/DMSAI.git
+cd DMSAI
+
+# Install all dependencies with the provided script
+.\scripts\install.ps1
+
+# Edit .env and set secrets, then start
+python .\dmsai.py start
+```
+
+The app opens at **http://localhost:5173**.
+
+Useful native CLI commands:
+
+```powershell
+python .\dmsai.py status          # show service health
+python .\dmsai.py logs ocr        # tail a service log
+python .\dmsai.py restart         # restart all services
+python .\dmsai.py stop            # stop all services
+python .\dmsai.py clean-db        # wipe all runtime data for a fresh start
+```
+
+---
+
+### Option C — Native (Linux / macOS)
+
+```bash
+git clone https://github.com/americium-241/DMSAI.git
+cd DMSAI
+bash scripts/install.sh
+# Edit .env, then:
+python dmsai.py start
+```
+
+---
+
+### LLM provider setup
+
+DMSAI requires an LLM for OCR, classification, entity extraction, entity resolution, and field extraction.
+
+**Ollama (local, free):**
+```bash
+# Install Ollama from https://ollama.com, then pull a model:
+ollama pull gemma3:27b
+# Set in .env:  OLLAMA_BASE_URL=http://localhost:11434  LLM_MODEL=gemma3:27b
+```
+
+**LiteLLM + Gemini (cloud):**
+```bash
+# Set in .env:  GEMINI_API_KEY=your-key
+# The CLI starts the LiteLLM proxy automatically alongside other services.
+```
+
+Both providers can be configured and switched from the admin **LLM Settings** page without restarting.
+
+---
 
 ## Screenshots
 
@@ -25,7 +139,6 @@ The backend is a set of local FastAPI microservices built on [DecentraFlow](READ
 - Upload documents through the web UI or authenticated API.
 - Convert supported images/documents into pipeline-ready PDFs.
 - Extract OCR text with the configured vision LLM.
-- Generate dense embeddings through Ollama or LiteLLM.
 - Classify documents with an LLM and canonical category/subcategory labels.
 - Extract and resolve entities across documents.
 - Extract structured fields and confidence details.
@@ -45,7 +158,7 @@ API Gateway 8080
 ingestion:8010 -> conversion:8011 -> storage:8012 -> ocr:8013
                                                        |
                                                        v
-embedding:8014 -> entity_extraction:8015 -> classification:8016
+entity_extraction:8015 -> classification:8016
                                                        |
                                                        v
 entity_resolution:8017 -> field_extraction:8018
@@ -61,7 +174,6 @@ The node ports are intended for local/internal service-to-service traffic. Exter
 | Conversion | 8011 | `nodes/conversion_node` | Convert files into pipeline-ready PDFs |
 | Storage | 8012 | `nodes/storage_node` | Persist files and document metadata |
 | OCR | 8013 | `nodes/ocr_node` | Extract text with a vision LLM |
-| Embedding | 8014 | `nodes/embedding_node` | Build dense LLM-provider embeddings |
 | Entity extraction | 8015 | `nodes/entity_extraction_node` | Extract named entities |
 | Classification | 8016 | `nodes/classification_node` | Classify with canonical category labels |
 | Entity resolution | 8017 | `nodes/entity_resolution_node` | Normalize and merge entities |
@@ -72,70 +184,13 @@ The node ports are intended for local/internal service-to-service traffic. Exter
 
 ## Requirements
 
-- Python 3.11+
-- Node.js 18+
-- Ollama, LiteLLM, or another compatible LLM provider
-- Docker, optional, for Loki/Promtail/Grafana monitoring
+| Method | Requirements |
+| --- | --- |
+| Docker Compose | Docker Desktop only |
+| Native (Windows) | Python 3.11+, Node.js 18+ |
+| Native (Linux/macOS) | Python 3.11+, Node.js 18+ |
 
-## Quick Start
-
-Create a local environment file:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Edit `.env` and set strong local values for:
-
-- `DMSAI_JWT_SECRET`
-- `DMSAI_INTERNAL_API_KEY`
-- `GEMINI_API_KEY`, if you use LiteLLM with Gemini
-
-Install Python packages:
-
-```powershell
-pip install -e .\core_framework
-pip install -e .\shared
-pip install -r .\api_gateway\requirements.txt
-
-foreach ($node in Get-ChildItem .\nodes -Directory) {
-  if (Test-Path "$($node.FullName)\requirements.txt") {
-    pip install -r "$($node.FullName)\requirements.txt"
-  }
-}
-```
-
-Install frontend packages:
-
-```powershell
-cd .\frontend
-npm install
-cd ..
-```
-
-Start the stack:
-
-```powershell
-python .\dmsai.py start
-```
-
-Open:
-
-- Frontend: `http://localhost:5173`
-- API gateway: `http://localhost:8080`
-- Pipeline health: `http://localhost:8080/api/pipeline/health`
-
-Useful CLI commands:
-
-```powershell
-python .\dmsai.py status
-python .\dmsai.py logs ocr
-python .\dmsai.py restart
-python .\dmsai.py stop
-python .\dmsai.py clean-db
-```
-
-`clean-db` deletes local runtime data. Do not use it against production data.
+An LLM provider is required in all cases: Ollama (local, free) or LiteLLM with a cloud API key.
 
 ## Configuration
 
@@ -149,7 +204,11 @@ Important files:
 - `litellm_config.yaml`: LiteLLM model routing. API keys are read from environment variables.
 - `nodes/*/config/routing.yaml`: pipeline routing between nodes.
 - `nodes/*/config/local_config.yaml`: node-specific local options.
-- `docker-compose.yml`: optional monitoring stack only.
+- `docker-compose.yml`: full application Docker Compose (use `--profile monitoring` for Grafana/Loki).
+- `docker-compose.monitoring.yml`: monitoring-only compose (Loki + Promtail + Grafana), for use alongside a native install.
+- `docker/Dockerfile.node`: base Python image for all pipeline nodes and the API gateway.
+- `docker/Dockerfile.frontend`: Node.js dev server image.
+- `docker/routing/`: Docker-specific routing configs using container service names.
 
 Security-sensitive settings:
 
@@ -211,11 +270,19 @@ The document detail response includes `ocr_text`, classification labels, confide
 
 ## Monitoring
 
-The Docker Compose stack runs logging infrastructure only. It does not run the DMSAI application services.
+The monitoring profile adds Loki (log aggregation), Promtail (log scraper), and Grafana (dashboards).
+
+With Docker Compose:
+
+```bash
+docker compose --profile monitoring up -d
+```
+
+With a native install (monitoring stack only):
 
 ```powershell
 $env:GRAFANA_ADMIN_PASSWORD = "change-this-password"
-docker compose up -d
+docker compose -f docker-compose.monitoring.yml up -d
 ```
 
 Monitoring URLs:

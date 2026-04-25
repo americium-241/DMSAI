@@ -295,8 +295,6 @@ Respond with ONLY a valid JSON object:
         ("confidence_pipeline_weights", "{\"ocr\":0.20,\"classification\":0.20,\"entity_extraction\":0.20,\"entity_resolution\":0.15,\"field_extraction\":0.25}", "confidence", "JSON weights for document pipeline confidence scoring"),
         ("classification_create_new_categories", "true", "classification", "Allow LLM classification to create new canonical document categories"),
         ("classification_new_category_min_confidence", "0.75", "classification", "Minimum confidence required before creating a new canonical document category"),
-        ("embedding_model", "nomic-embed-text", "embedding", "Model name for dense embeddings"),
-        ("embedding_provider", "ollama", "embedding", "Embedding provider: ollama or litellm"),
         ("low_confidence_threshold", "0.5", "buckets", "Pipeline confidence below which docs go to low-confidence bucket"),
         ("low_confidence_bucket_enabled", "false", "buckets", "Enable automatic low-confidence bucket assignment"),
         # SMTP / email verification
@@ -359,6 +357,8 @@ def _remove_obsolete_system_config(engine) -> None:
         "dense_embedding_model",        # retired local/sentence-transformer embedding setting
         "ocr_confidence_threshold",     # retired hybrid/DocTR threshold
         "ocr_vllm_enabled",             # OCR is always vision-LLM now
+        "embedding_model",              # retired embedding node
+        "embedding_provider",           # retired embedding node
     }
     with Session(engine) as session:
         rows = session.exec(select(SystemConfig).where(SystemConfig.key.in_(obsolete_keys))).all()

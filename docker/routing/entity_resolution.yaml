@@ -1,0 +1,12 @@
+node_name: "entity_resolution_node"
+environment: "docker"
+
+next_nodes:
+  - "http://field_extraction:8018"
+
+max_retries: 3
+backoff_base: 2.0
+max_queue_depth: 500
+max_workers: 2
+task_timeout: 300
+shutdown_timeout: 60

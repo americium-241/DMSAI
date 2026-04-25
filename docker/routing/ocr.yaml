@@ -1,8 +1,8 @@
 node_name: "ocr_node"
-environment: "dev"
+environment: "docker"
 
 next_nodes:
-  - "http://localhost:8015"  # entity_extraction_node
+  - "http://entity_extraction:8015"
 
 max_retries: 3
 backoff_base: 2.0

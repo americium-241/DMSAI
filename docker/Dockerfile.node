@@ -1,0 +1,46 @@
+FROM python:3.11-slim
+
+# System deps needed by PyMuPDF and Pillow
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 libgl1 libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install shared Python packages first (cached layer)
+# NOTE: core_framework/ is a local copy of the decentraflow package kept here
+# for Docker builds. Once you publish decentraflow to GitHub/PyPI, replace the
+# two lines below with:
+#   RUN pip install --no-cache-dir decentraflow -e ./shared
+COPY core_framework/ ./core_framework/
+COPY shared/ ./shared/
+RUN pip install --no-cache-dir -e ./core_framework -e ./shared
+
+# Install the union of all node + gateway requirements in one layer
+COPY api_gateway/requirements.txt ./requirements.gateway.txt
+COPY nodes/ingestion_node/requirements.txt ./requirements.ingestion.txt
+COPY nodes/conversion_node/requirements.txt ./requirements.conversion.txt
+COPY nodes/storage_node/requirements.txt ./requirements.storage.txt
+COPY nodes/ocr_node/requirements.txt ./requirements.ocr.txt
+COPY nodes/entity_extraction_node/requirements.txt ./requirements.entity_extraction.txt
+COPY nodes/classification_node/requirements.txt ./requirements.classification.txt
+COPY nodes/entity_resolution_node/requirements.txt ./requirements.entity_resolution.txt
+COPY nodes/field_extraction_node/requirements.txt ./requirements.field_extraction.txt
+RUN pip install --no-cache-dir \
+    -r requirements.gateway.txt \
+    -r requirements.ingestion.txt \
+    -r requirements.conversion.txt \
+    -r requirements.storage.txt \
+    -r requirements.ocr.txt \
+    -r requirements.entity_extraction.txt \
+    -r requirements.classification.txt \
+    -r requirements.entity_resolution.txt \
+    -r requirements.field_extraction.txt \
+    && rm -rf /root/.cache
+
+# Copy entire project (routing files, node src, gateway src, etc.)
+COPY . .
+
+# Default: run the API gateway. Override in docker-compose per service.
+WORKDIR /app/api_gateway
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]

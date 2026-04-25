@@ -8,7 +8,6 @@ const LLM_SETTING_KEYS = new Set([
   'ollama_base_url',
   'llm_model',
   'litellm_base_url',
-  'litellm_api_key',
   'litellm_model',
   'llm_temperature',
   'llm_timeout_seconds',
@@ -27,8 +26,6 @@ const LLM_SETTING_KEYS = new Set([
   'entity_name_match_high',
   'entity_name_match_low',
   'entity_llm_confirm_min',
-  'embedding_model',
-  'embedding_provider',
 ]);
 
 const CATEGORY_META: Record<string, { label: string; description: string; order: number }> = {
@@ -37,7 +34,6 @@ const CATEGORY_META: Record<string, { label: string; description: string; order:
   ocr: { label: 'OCR Vision', description: 'Vision model and OCR prompt settings.', order: 2 },
   classification: { label: 'LLM Classification Controls', description: 'Canonical category creation and classification thresholds used by the LLM classifier.', order: 3 },
   entity_resolution: { label: 'Entity Resolution', description: 'Entity matching thresholds and LLM confirmation settings.', order: 4 },
-  embedding: { label: 'LLM Embeddings', description: 'Dense embedding provider/model settings. No local embedding model is trained.', order: 5 },
 };
 
 const KEY_SERVICES: Record<string, string[]> = {
@@ -45,7 +41,6 @@ const KEY_SERVICES: Record<string, string[]> = {
   ollama_base_url: ['classification', 'entity_extraction', 'entity_resolution', 'field_extraction', 'ocr'],
   llm_model: ['classification', 'entity_extraction', 'entity_resolution', 'field_extraction', 'ocr'],
   litellm_base_url: ['classification', 'entity_extraction', 'entity_resolution', 'field_extraction', 'ocr'],
-  litellm_api_key: ['litellm'],
   litellm_model: ['classification', 'entity_extraction', 'entity_resolution', 'field_extraction', 'ocr'],
   llm_temperature: ['classification', 'entity_extraction', 'entity_resolution', 'field_extraction', 'ocr'],
   llm_timeout_seconds: ['classification', 'entity_extraction', 'entity_resolution', 'field_extraction'],
@@ -64,8 +59,6 @@ const KEY_SERVICES: Record<string, string[]> = {
   entity_name_match_high: ['entity_resolution'],
   entity_name_match_low: ['entity_resolution'],
   entity_llm_confirm_min: ['entity_resolution'],
-  embedding_model: ['embedding'],
-  embedding_provider: ['embedding'],
 };
 
 function isSensitive(key: string) {

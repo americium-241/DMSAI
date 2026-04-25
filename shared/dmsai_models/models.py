@@ -235,20 +235,6 @@ class CanonicalDocumentClass(SQLModel, table=True):
 
 
 # ---------------------------------------------------------------------------
-# Embedding storage
-# ---------------------------------------------------------------------------
-
-class DocumentEmbedding(SQLModel, table=True):
-    """Stored LLM-provider dense embedding vectors for a document."""
-
-    id: str = Field(primary_key=True)
-    document_id: str = Field(foreign_key="document.id", index=True)
-    dense_vector: Optional[str] = Field(default=None)
-    combined_vector: Optional[str] = Field(default=None)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-
-# ---------------------------------------------------------------------------
 # Feedback and pipeline observability
 # ---------------------------------------------------------------------------
 

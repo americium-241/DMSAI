@@ -1,7 +1,0 @@
-fastapi
-uvicorn
-sqlmodel
-aiosqlite
-httpx
-pyyaml
-numpy

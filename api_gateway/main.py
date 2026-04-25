@@ -43,7 +43,6 @@ NODE_URLS = {
     "conversion": os.environ.get("CONVERSION_NODE_URL", "http://localhost:8011"),
     "storage": os.environ.get("STORAGE_NODE_URL", "http://localhost:8012"),
     "ocr": os.environ.get("OCR_NODE_URL", "http://localhost:8013"),
-    "embedding": os.environ.get("EMBEDDING_NODE_URL", "http://localhost:8014"),
     "entity_extraction": os.environ.get("ENTITY_EXTRACTION_NODE_URL", "http://localhost:8015"),
     "classification": os.environ.get("CLASSIFICATION_NODE_URL", "http://localhost:8016"),
     "entity_resolution": os.environ.get("ENTITY_RESOLUTION_NODE_URL", "http://localhost:8017"),
