@@ -219,6 +219,7 @@ async def register(body: RegisterRequest, request: Request):
         is_first_user = total_users == 0
 
         if is_first_user:
+            # Bootstrap: first user creates the initial organization and becomes its admin.
             org_name = body.organization_name or "Default Organization"
             org = Organization(
                 id=str(uuid.uuid4()),
@@ -230,24 +231,27 @@ async def register(body: RegisterRequest, request: Request):
             org_id = org.id
             role = "admin"
         else:
+            # Subsequent users must JOIN an existing organization as a regular user.
+            # New organizations can only be created by an administrator via the admin API.
             if not body.organization_name:
-                raise HTTPException(status_code=400, detail="organization_name required for non-first users")
+                raise HTTPException(
+                    status_code=400,
+                    detail="organization_name is required. Provide the exact name of your organization.",
+                )
             existing_org = session.exec(
                 select(Organization).where(Organization.name == body.organization_name)
             ).first()
-            if existing_org:
+            if not existing_org:
                 raise HTTPException(
-                    status_code=403,
-                    detail="This organization already exists. Ask an admin to add your account.",
+                    status_code=404,
+                    detail=(
+                        "Organization not found. "
+                        "Contact an administrator to create your account or to create the organization."
+                    ),
                 )
-            org = Organization(
-                id=str(uuid.uuid4()),
-                name=body.organization_name,
-                created_at=datetime.utcnow(),
-            )
-            session.add(org)
-            session.flush()
-            org_id = org.id
+            org_id = existing_org.id
+            org_name = existing_org.name
+            # Always a regular user — admins must promote via PUT /api/users/{id}
             role = "user"
 
         verification_token = generate_verification_token() if verification_enabled else None
@@ -268,7 +272,6 @@ async def register(body: RegisterRequest, request: Request):
             created_at=datetime.utcnow(),
         )
         session.add(user)
-        org_name_out = org_name if is_first_user else (body.organization_name or "")
         user_id = user.id
         user_email = user.email
         user_full_name = user.full_name
@@ -283,7 +286,7 @@ async def register(body: RegisterRequest, request: Request):
             "message": "Account created. Please check your email to verify your address.",
             "user": _build_user_response(
                 user_id, user_email, user_full_name, user_role,
-                org_id, org_name_out, email_verified=False,
+                org_id, org_name, email_verified=False,
             ),
         }
 
@@ -293,7 +296,7 @@ async def register(body: RegisterRequest, request: Request):
         "token_type": "bearer",
         "user": _build_user_response(
             user_id, user_email, user_full_name, user_role,
-            org_id, org_name_out, email_verified=True,
+            org_id, org_name, email_verified=True,
         ),
     }
 
@@ -460,9 +463,18 @@ async def update_user(user_id: str, body: UserUpdate, current: User = Depends(re
             raise HTTPException(status_code=404, detail="User not found")
         if body.full_name is not None:
             user.full_name = body.full_name
-        if body.role is not None and body.role in ("admin", "manager", "user"):
+        if body.role is not None:
+            if body.role not in ("admin", "manager", "user"):
+                raise HTTPException(status_code=400, detail="role must be admin, manager, or user")
+            if user_id == current.id and body.role != "admin":
+                raise HTTPException(
+                    status_code=400,
+                    detail="You cannot demote your own admin account. Ask another admin to do this.",
+                )
             user.role = body.role
         if body.is_active is not None:
+            if user_id == current.id and not body.is_active:
+                raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
             user.is_active = body.is_active
         session.add(user)
         session.commit()

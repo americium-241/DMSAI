@@ -42,6 +42,10 @@ class Document(SQLModel, table=True):
     updated_at: Optional[datetime] = Field(default=None)
     processed_at: Optional[datetime] = Field(default=None)
 
+    archived_at: Optional[datetime] = Field(default=None)
+    trashed_at: Optional[datetime] = Field(default=None)
+    compressed_at: Optional[datetime] = Field(default=None)
+
 
 # ---------------------------------------------------------------------------
 # Organization and User
@@ -232,6 +236,62 @@ class CanonicalDocumentClass(SQLModel, table=True):
     aliases: str = Field(default="[]")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: Optional[datetime] = Field(default=None)
+
+
+# ---------------------------------------------------------------------------
+# Comments (forum/messaging for documents and entities)
+# ---------------------------------------------------------------------------
+
+class DocumentComment(SQLModel, table=True):
+    """A user note or message attached to a document, with optional threading."""
+
+    id: str = Field(primary_key=True)
+    document_id: str = Field(foreign_key="document.id", index=True)
+    user_id: str = Field(foreign_key="user.id", index=True)
+    content: str
+    parent_id: Optional[str] = Field(default=None, foreign_key="documentcomment.id", index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: Optional[datetime] = Field(default=None)
+
+
+class EntityComment(SQLModel, table=True):
+    """A user note or message attached to an entity, with optional threading."""
+
+    id: str = Field(primary_key=True)
+    entity_id: str = Field(foreign_key="entity.id", index=True)
+    user_id: str = Field(foreign_key="user.id", index=True)
+    content: str
+    parent_id: Optional[str] = Field(default=None, foreign_key="entitycomment.id", index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: Optional[datetime] = Field(default=None)
+
+
+# ---------------------------------------------------------------------------
+# Document audit log and version snapshots
+# ---------------------------------------------------------------------------
+
+class DocumentAuditLog(SQLModel, table=True):
+    """Comprehensive event log for every state-changing action on a document."""
+
+    id: str = Field(primary_key=True)
+    document_id: str = Field(foreign_key="document.id", index=True)
+    entity_id: Optional[str] = Field(default=None, foreign_key="entity.id", index=True)
+    user_id: Optional[str] = Field(default=None, foreign_key="user.id", index=True)
+    action: str = Field(index=True)
+    details: Optional[str] = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class DocumentVersion(SQLModel, table=True):
+    """Snapshot of a document's key metadata at a point in time."""
+
+    id: str = Field(primary_key=True)
+    document_id: str = Field(foreign_key="document.id", index=True)
+    version_number: int
+    created_by: Optional[str] = Field(default=None, foreign_key="user.id")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    summary: str = Field(default="")
+    snapshot_json: Optional[str] = Field(default=None)
 
 
 # ---------------------------------------------------------------------------

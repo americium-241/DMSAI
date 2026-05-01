@@ -19,9 +19,9 @@ from dmsai_models import (
     Document, DocumentEntity,
     Entity, EntityField,
     CanonicalDocumentClass, CanonicalField,
-    SystemConfig, User, get_session, init_db,
+    Organization, SystemConfig, User, get_session, init_db,
 )
-from auth import require_admin, require_manager, get_current_user
+from auth import require_admin, require_manager, get_current_user, hash_password, validate_password
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -69,7 +69,7 @@ async def list_entities(
     search: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_manager),
 ):
     init_db()
     with get_session() as session:
@@ -708,3 +708,184 @@ async def restart_services(body: ServiceRestartRequest, user: User = Depends(req
     cmd = [sys.executable, str(root / "dmsai.py"), "restart", "--only", ",".join(services)]
     subprocess.Popen(cmd, cwd=str(root), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return {"status": "restart_started", "services": services}
+
+
+# ---------------------------------------------------------------------------
+# Admin — User management
+# ---------------------------------------------------------------------------
+
+class AdminUserCreate(BaseModel):
+    email: str
+    password: str
+    full_name: str
+    role: str = "user"
+    organization_id: Optional[str] = None  # defaults to admin's own org
+
+
+class AdminUserUpdate(BaseModel):
+    full_name: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+@router.post(
+    "/users",
+    summary="Create user",
+    description=(
+        "Admin creates a new user account. "
+        "By default the user is placed in the admin's own organization. "
+        "Specify `organization_id` to create a user in a different organization "
+        "(useful when setting up a freshly created org via `POST /api/admin/organizations`)."
+    ),
+)
+async def admin_create_user(body: AdminUserCreate, admin: User = Depends(require_admin)):
+    pw_error = validate_password(body.password)
+    if pw_error:
+        raise HTTPException(status_code=400, detail=pw_error)
+
+    if body.role not in ("admin", "manager", "user"):
+        raise HTTPException(status_code=400, detail="role must be admin, manager, or user")
+
+    target_org_id = body.organization_id or admin.organization_id
+
+    with get_session() as session:
+        # Verify target org exists
+        org = session.get(Organization, target_org_id)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+
+        # Check email uniqueness
+        existing = session.exec(select(User).where(User.email == body.email)).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Email already registered")
+
+        new_user = User(
+            id=str(uuid.uuid4()),
+            email=body.email,
+            password_hash=hash_password(body.password),
+            full_name=body.full_name,
+            role=body.role,
+            organization_id=target_org_id,
+            is_active=True,
+            auth_provider="local",
+            email_verified=True,  # admin-created accounts are pre-verified
+            created_at=datetime.utcnow(),
+        )
+        session.add(new_user)
+        session.commit()
+        return {
+            "status": "created",
+            "id": new_user.id,
+            "email": new_user.email,
+            "full_name": new_user.full_name,
+            "role": new_user.role,
+            "organization_id": new_user.organization_id,
+        }
+
+
+@router.delete(
+    "/users/{user_id}",
+    summary="Deactivate user",
+    description=(
+        "Deactivate a user account. The user cannot log in while deactivated. "
+        "Their data is preserved. Admins may only deactivate users in their own organization. "
+        "An admin cannot deactivate their own account."
+    ),
+)
+async def admin_deactivate_user(user_id: str, admin: User = Depends(require_admin)):
+    if user_id == admin.id:
+        raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
+
+    with get_session() as session:
+        user = session.get(User, user_id)
+        if not user or user.organization_id != admin.organization_id:
+            raise HTTPException(status_code=404, detail="User not found")
+        if not user.is_active:
+            return {"status": "already_inactive", "id": user_id}
+        user.is_active = False
+        session.add(user)
+        session.commit()
+    return {"status": "deactivated", "id": user_id}
+
+
+@router.put(
+    "/users/{user_id}",
+    summary="Update user (admin)",
+    description="Update a user's role, name, or active status. Admins may only update users in their own organization.",
+)
+async def admin_update_user(user_id: str, body: AdminUserUpdate, admin: User = Depends(require_admin)):
+    with get_session() as session:
+        user = session.get(User, user_id)
+        if not user or user.organization_id != admin.organization_id:
+            raise HTTPException(status_code=404, detail="User not found")
+        if body.full_name is not None:
+            user.full_name = body.full_name
+        if body.role is not None:
+            if body.role not in ("admin", "manager", "user"):
+                raise HTTPException(status_code=400, detail="role must be admin, manager, or user")
+            if user_id == admin.id and body.role != "admin":
+                raise HTTPException(
+                    status_code=400,
+                    detail="You cannot demote your own admin account. Ask another admin to do this.",
+                )
+            user.role = body.role
+        if body.is_active is not None:
+            if user_id == admin.id and not body.is_active:
+                raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
+            user.is_active = body.is_active
+        session.add(user)
+        session.commit()
+    return {"status": "updated"}
+
+
+# ---------------------------------------------------------------------------
+# Admin — Organization management
+# ---------------------------------------------------------------------------
+
+class OrganizationCreate(BaseModel):
+    name: str
+
+
+@router.get(
+    "/organizations",
+    summary="List organizations",
+    description="Return all organizations visible to this admin. Only the admin's own org is returned unless there are no other admins for other orgs.",
+)
+async def admin_list_organizations(admin: User = Depends(require_admin)):
+    with get_session() as session:
+        orgs = session.exec(select(Organization)).all()
+        return [
+            {"id": o.id, "name": o.name, "created_at": str(o.created_at)}
+            for o in orgs
+        ]
+
+
+@router.post(
+    "/organizations",
+    summary="Create organization",
+    description=(
+        "Create a new organization. After creation, use `POST /api/admin/users` with the new "
+        "`organization_id` to create the first user (admin) for that organization. "
+        "Users can also self-register with the exact organization name if registration is open."
+    ),
+)
+async def admin_create_organization(body: OrganizationCreate, admin: User = Depends(require_admin)):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Organization name cannot be empty")
+
+    with get_session() as session:
+        existing = session.exec(
+            select(Organization).where(Organization.name == name)
+        ).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="An organization with this name already exists")
+
+        org = Organization(
+            id=str(uuid.uuid4()),
+            name=name,
+            created_at=datetime.utcnow(),
+        )
+        session.add(org)
+        session.commit()
+        return {"status": "created", "id": org.id, "name": org.name, "created_at": str(org.created_at)}

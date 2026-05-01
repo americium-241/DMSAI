@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Pencil, Plus, Trash2, GitMerge } from 'lucide-react';
-import { api, type EntityDossierResponse, type EntityRelationshipItem, type EntityFieldItem } from '../../api';
+import { ArrowLeft, Pencil, Plus, Trash2, GitMerge, MessageSquare } from 'lucide-react';
+import { api, type EntityDossierResponse, type EntityRelationshipItem, type EntityFieldItem, type EntityCommentItem } from '../../api';
 import Badge from '../../components/Badge';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
+import CommentThread from '../../components/CommentThread';
 
 export default function EntityDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -23,6 +24,9 @@ export default function EntityDetailPage() {
   const [showAddField, setShowAddField] = useState(false);
   const [newFieldName, setNewFieldName] = useState('');
   const [newFieldValue, setNewFieldValue] = useState('');
+  const [comments, setComments] = useState<EntityCommentItem[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [showNotes, setShowNotes] = useState(false);
 
   const load = async () => {
     if (!id) return;
@@ -40,6 +44,14 @@ export default function EntityDetailPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const loadComments = async () => {
+    if (!id) return;
+    setCommentsLoading(true);
+    try { setComments(await api.getEntityComments(id)); }
+    catch { setComments([]); }
+    finally { setCommentsLoading(false); }
   };
 
   useEffect(() => {
@@ -233,6 +245,38 @@ export default function EntityDetailPage() {
           <button type="button" onClick={addField} className="w-full py-2.5 rounded-lg bg-blue-600 text-white text-sm">Add</button>
         </div>
       </Modal>
+
+      {/* Notes section */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <MessageSquare size={16} className="text-gray-500" />
+            <h2 className="text-lg font-semibold text-white">Notes</h2>
+          </div>
+          {!showNotes && (
+            <button type="button"
+              onClick={() => { setShowNotes(true); loadComments(); }}
+              className="text-sm text-blue-400 hover:text-blue-300">
+              Show notes
+            </button>
+          )}
+        </div>
+        {showNotes && (
+          <CommentThread
+            comments={comments}
+            loading={commentsLoading}
+            onAdd={async (content, parentId) => {
+              if (id) { await api.createEntityComment(id, content, parentId); await loadComments(); }
+            }}
+            onEdit={async (commentId, content) => {
+              if (id) { await api.updateEntityComment(id, commentId, content); await loadComments(); }
+            }}
+            onDelete={async (commentId) => {
+              if (id && confirm('Delete this note?')) { await api.deleteEntityComment(id, commentId); await loadComments(); }
+            }}
+          />
+        )}
+      </div>
 
       <Modal open={mergeOpen} onClose={() => setMergeOpen(false)} title="Merge entity">
         <p className="text-sm text-gray-400 mb-3">

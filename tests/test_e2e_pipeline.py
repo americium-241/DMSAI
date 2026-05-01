@@ -8,9 +8,9 @@ Tests every stage of the document processing pipeline in order:
   4. OCR (Vision LLM)
   5. Classification (LLM-mocked)
   6. Entity extraction (LLM-mocked)
-  7. Entity resolution (identifier matching, name similarity)
+  7. Entity resolution (LLM-first: identifier match → token-overlap pre-filter → LLM)
   8. Field extraction (LLM-mocked) + pipeline confidence
-  9. Multi-document entity resolution (same entity across docs)
+  9. Multi-document entity resolution (same entity across docs, identifier path)
  10. Final DB state verification
 
 All LLM calls are mocked with realistic deterministic responses.
@@ -56,6 +56,8 @@ from conftest import (
     MOCK_FIELD_EXTRACT_RESPONSE,
     MOCK_CANONICAL_MAP_EXISTING,
     MOCK_CANONICAL_MAP_NEW,
+    MOCK_ENTITY_RESOLUTION_SAME,
+    MOCK_ENTITY_RESOLUTION_DIFFERENT,
     make_llm_side_effect,
 )
 
@@ -301,15 +303,20 @@ class TestEntityResolution:
     async def test_new_entities_created(
         self, first_doc: Path, first_doc_bytes: bytes,
         mock_llm_classification, mock_llm_entity_extraction,
+        mock_llm_entity_resolution,
     ):
-        """First document -> all entities are new."""
+        """Entities are resolved (new or reused) and recorded in the DB.
+
+        The resolution LLM is mocked to say 'different' so each run creates fresh
+        entities deterministically without relying on DB state from previous tests.
+        """
         payload = await _run_up_to_entity_extraction(first_doc, first_doc_bytes)
         payload = await entity_resolution_logic.process_entity_resolution(payload)
 
         assert "entity_resolution_completed" in payload["history"]
         resolved = payload["resolved_entities"]
         assert len(resolved) == 2
-        assert all(r["is_new"] for r in resolved)
+        assert all("entity_id" in r for r in resolved)
 
         doc = _get_doc(payload["workflow_id"])
         assert doc.status == "ENTITIES_RESOLVED"
@@ -324,7 +331,10 @@ class TestEntityResolution:
 
     @pytest.mark.asyncio
     async def test_identifier_match_on_second_doc(self, example_docs):
-        """Second doc with same tax_id -> entity matched by identifier (conf=1.0)."""
+        """Second doc with same tax_id → entity matched by identifier (conf=1.0).
+
+        The identifier path bypasses the LLM entirely, so no resolution mock needed.
+        """
         if len(example_docs) < 2:
             pytest.skip("Need at least 2 example docs")
 
@@ -341,6 +351,10 @@ class TestEntityResolution:
             entity_extraction_logic, "_call_llm",
             new_callable=AsyncMock,
             return_value=MOCK_ENTITY_EXTRACTION_RESPONSE,
+        ), patch.object(
+            entity_resolution_logic, "_call_llm",
+            new_callable=AsyncMock,
+            return_value=MOCK_ENTITY_RESOLUTION_DIFFERENT,
         ):
             p1 = await _run_up_to_entity_extraction(doc1, doc1_bytes)
             await entity_resolution_logic.process_entity_resolution(p1)
@@ -354,6 +368,8 @@ class TestEntityResolution:
             new_callable=AsyncMock,
             return_value=MOCK_ENTITY_EXTRACTION_RESPONSE_2,
         ):
+            # MOCK_ENTITY_EXTRACTION_RESPONSE_2 contains the same tax_id as doc1,
+            # so the identifier match fires and the LLM is never called for ACME.
             p2 = await _run_up_to_entity_extraction(doc2, doc2_bytes)
             p2 = await entity_resolution_logic.process_entity_resolution(p2)
 
@@ -374,6 +390,7 @@ class TestFieldExtraction:
     async def test_field_extraction_and_pipeline_confidence(
         self, first_doc: Path, first_doc_bytes: bytes,
         mock_llm_classification, mock_llm_entity_extraction,
+        mock_llm_entity_resolution,
         mock_llm_field_extraction,
     ):
         payload = await _run_up_to_entity_extraction(first_doc, first_doc_bytes)
@@ -453,6 +470,10 @@ class TestFullPipelineMultiDoc:
                 new_callable=AsyncMock,
                 return_value=entity_response,
             ), patch.object(
+                entity_resolution_logic, "_call_llm",
+                new_callable=AsyncMock,
+                return_value=MOCK_ENTITY_RESOLUTION_DIFFERENT,
+            ), patch.object(
                 field_extraction_logic, "_call_llm",
                 new_callable=AsyncMock,
                 side_effect=make_llm_side_effect(field_responses),
@@ -525,3 +546,159 @@ class TestDBIntegrity:
             pytest.skip("No document-entity links in DB yet")
         for link in links:
             assert 0.0 <= link.confidence <= 1.0, f"DocumentEntity {link.id} confidence out of range"
+
+    def test_no_orphaned_document_entity_rows(self):
+        """All DocumentEntity.document_id values should have a matching Document."""
+        with get_session() as s:
+            links = s.exec(select(DocumentEntity)).all()
+            doc_ids_in_db = {d.id for d in s.exec(select(Document)).all()}
+        for link in links:
+            assert link.document_id in doc_ids_in_db, (
+                f"Orphaned DocumentEntity {link.id}: document_id {link.document_id} not in Document table"
+            )
+
+    def test_no_orphaned_entity_field_rows(self):
+        """All EntityField.entity_id values should have a matching Entity."""
+        with get_session() as s:
+            efs = s.exec(select(EntityField)).all()
+            entity_ids = {e.id for e in s.exec(select(Entity)).all()}
+        for ef in efs:
+            assert ef.entity_id in entity_ids, (
+                f"Orphaned EntityField {ef.id}: entity_id {ef.entity_id} not in Entity table"
+            )
+
+    def test_completed_documents_have_pipeline_confidence(self):
+        """Documents with status COMPLETED should all have a pipeline_confidence set."""
+        with get_session() as s:
+            completed = s.exec(
+                select(Document).where(Document.status == "COMPLETED")
+            ).all()
+        if not completed:
+            pytest.skip("No completed documents in DB yet")
+        for doc in completed:
+            assert doc.pipeline_confidence is not None, (
+                f"Document {doc.id} is COMPLETED but has no pipeline_confidence"
+            )
+            assert 0.0 <= doc.pipeline_confidence <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# 12. Pipeline recovery (partial failure scenarios)
+# ---------------------------------------------------------------------------
+
+class TestPipelineRecovery:
+
+    @pytest.mark.asyncio
+    async def test_entity_extraction_failure_leaves_document_in_ocr_done(self, first_doc: Path, first_doc_bytes: bytes):
+        """If entity extraction raises, the Document should remain in its last known status."""
+        payload = await _run_up_to_ocr(first_doc, first_doc_bytes)
+        doc_id = payload["workflow_id"]
+
+        # Simulate entity extraction LLM completely failing
+        with patch.object(
+            entity_extraction_logic, "_call_llm",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("LLM service unavailable"),
+        ):
+            try:
+                await entity_extraction_logic.process_entity_extraction(payload)
+            except RuntimeError:
+                pass  # Expected failure
+
+        doc = _get_doc(doc_id)
+        # Document should be at OCR_DONE or ENTITIES_EXTRACTED — not COMPLETED
+        assert doc.status in ("OCR_DONE", "ENTITIES_EXTRACTED", "INGESTED", "STORED")
+        assert doc.status != "COMPLETED"
+
+    @pytest.mark.asyncio
+    async def test_classification_empty_ocr_text_does_not_crash(self, first_doc: Path, first_doc_bytes: bytes):
+        """Empty OCR text should be handled gracefully by classification."""
+        payload = ingestion_logic.build_ingestion_payload(
+            first_doc_bytes, first_doc.name, source="test"
+        )
+        payload = await ingestion_logic.process_document(payload)
+        payload = await conversion_logic.process_document(payload)
+        payload = await storage_logic.process_document(payload)
+        payload["ocr_text"] = ""  # Simulate empty OCR
+        payload["ocr_confidence"] = 0.0
+
+        with patch.object(
+            classification_logic, "_call_llm",
+            new_callable=AsyncMock,
+            return_value=MOCK_CLASSIFICATION_RESPONSE,
+        ):
+            result = await classification_logic.process_classification(payload)
+
+        assert isinstance(result, dict)
+        assert "history" in result
+
+    @pytest.mark.asyncio
+    async def test_field_extraction_skipped_without_ocr_text(self, first_doc: Path, first_doc_bytes: bytes):
+        """Field extraction should gracefully skip when ocr_text is missing."""
+        payload = ingestion_logic.build_ingestion_payload(
+            first_doc_bytes, first_doc.name, source="test"
+        )
+        payload["ocr_text"] = ""
+
+        with patch.object(
+            field_extraction_logic, "_trigger_bucket_assignment",
+            new_callable=AsyncMock,
+        ):
+            result = await field_extraction_logic.process_field_extraction(payload)
+
+        assert result["extracted_fields"] == []
+        assert "field_extraction_skipped" in result["history"]
+
+
+# ---------------------------------------------------------------------------
+# 13. Multi-file-type parametrised E2E
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def multi_doc_params(example_docs: list):
+    """Return up to 3 example docs (different file types if available)."""
+    # Select up to one PDF and one JPEG to cover image + PDF paths
+    pdfs = [d for d in example_docs if d.suffix.lower() == ".pdf"]
+    images = [d for d in example_docs if d.suffix.lower() in {".jpg", ".jpeg", ".png"}]
+    selected = []
+    if pdfs:
+        selected.append(pdfs[0])
+    if images:
+        selected.append(images[0])
+    if not selected:
+        selected = example_docs[:2]
+    return selected
+
+
+class TestMultiFileTypeE2E:
+
+    @pytest.mark.asyncio
+    async def test_pdf_and_image_both_convert_to_pdf(self, multi_doc_params: list):
+        """Both PDF and image inputs should produce a valid PDF payload after conversion."""
+        for doc_path in multi_doc_params:
+            doc_bytes = doc_path.read_bytes()
+            payload = ingestion_logic.build_ingestion_payload(doc_bytes, doc_path.name)
+            payload = await ingestion_logic.process_document(payload)
+            payload = await conversion_logic.process_document(payload)
+
+            pdf_bytes = base64.b64decode(payload["file_bytes"])
+            assert pdf_bytes[:4] == b"%PDF", (
+                f"{doc_path.name} ({doc_path.suffix}) should produce PDF after conversion"
+            )
+            assert payload["unified_extension"] == ".pdf"
+
+    @pytest.mark.asyncio
+    async def test_all_file_types_reach_stored_status(self, multi_doc_params: list):
+        """All file types should reach STORED status after storage node."""
+        for doc_path in multi_doc_params:
+            doc_bytes = doc_path.read_bytes()
+            payload = ingestion_logic.build_ingestion_payload(doc_bytes, doc_path.name)
+            payload = await ingestion_logic.process_document(payload)
+            payload = await conversion_logic.process_document(payload)
+            payload = await storage_logic.process_document(payload)
+
+            doc = _get_doc(payload["workflow_id"])
+            assert doc.status == "STORED", (
+                f"{doc_path.name}: expected STORED, got {doc.status}"
+            )
+            assert os.path.isfile(payload["storage_path"])

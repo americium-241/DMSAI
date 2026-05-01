@@ -1,9 +1,11 @@
 import { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, Save, Plus, Trash2, Pencil, ToggleLeft, ToggleRight, Info, FileText, Layers, Eye, CheckCircle, Loader2, Circle, GitMerge, ShieldCheck } from 'lucide-react';
-import { api, type DocumentDetail as DocDetail, type DocField, type WorkflowState, type EntityFieldItem, type PipelineEventItem, type CanonicalFieldItem, type EntityItem } from '../api';
+import { ArrowLeft, Save, Plus, Trash2, Pencil, ToggleLeft, ToggleRight, Info, FileText, Layers, Eye, CheckCircle, Loader2, Circle, GitMerge, ShieldCheck, Network, FolderOpen, Archive, RotateCcw, MessageSquare, Clock } from 'lucide-react';
+import { api, type DocumentDetail as DocDetail, type DocField, type WorkflowState, type EntityFieldItem, type PipelineEventItem, type CanonicalFieldItem, type EntityItem, type BucketSummary, type DocumentBucketItem, type RelatedDocument, type DocumentCommentItem, type AuditLogEntry, type DocumentVersionItem } from '../api';
 import Badge from '../components/Badge';
 import Modal from '../components/Modal';
+import CommentThread from '../components/CommentThread';
+import AuditTimeline from '../components/AuditTimeline';
 
 function usePdfBlobUrl(docId: string | undefined) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
@@ -41,7 +43,7 @@ function ConfBar({ label, value, method }: { label: string; value: number | unde
   );
 }
 
-type Tab = 'confidence' | 'original' | 'extraction' | 'ocr' | 'info';
+type Tab = 'confidence' | 'original' | 'extraction' | 'ocr' | 'info' | 'relations' | 'notes' | 'history';
 
 type ConfidenceDetails = {
   score?: number | null;
@@ -233,16 +235,39 @@ export default function DocumentDetailPage() {
   const [entityCandidates, setEntityCandidates] = useState<EntityItem[]>([]);
   const [entityTargetId, setEntityTargetId] = useState<string | null>(null);
 
+  // Bucket management
+  const [docBuckets, setDocBuckets] = useState<DocumentBucketItem[]>([]);
+  const [allBuckets, setAllBuckets] = useState<BucketSummary[]>([]);
+  const [addBucketId, setAddBucketId] = useState('');
+  const [bucketSaving, setBucketSaving] = useState(false);
+
+  // Relations
+  const [relatedDocs, setRelatedDocs] = useState<RelatedDocument[] | null>(null);
+  const [relatedLoading, setRelatedLoading] = useState(false);
+
+  // Notes / Comments
+  const [comments, setComments] = useState<DocumentCommentItem[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+
+  // History / Audit
+  const [auditEntries, setAuditEntries] = useState<AuditLogEntry[]>([]);
+  const [versions, setVersions] = useState<DocumentVersionItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
   const load = async () => {
     if (!id) return;
     try {
-      const [d, f, rawEntities, ws, pe] = await Promise.all([
+      const [d, f, rawEntities, ws, pe, dBuckets, aBuckets] = await Promise.all([
         api.getDocument(id),
         api.getDocumentFields(id),
         api.getDocumentEntities(id),
         api.getWorkflowState(id),
         api.getDocumentEvents(id).then((r) => r.events).catch(() => [] as PipelineEventItem[]),
+        api.getDocumentBuckets(id).catch(() => [] as DocumentBucketItem[]),
+        api.getBuckets().catch(() => [] as BucketSummary[]),
       ]);
+      setDocBuckets(dBuckets);
+      setAllBuckets(aBuckets);
       setDoc(d);
       setPipelineEvents(pe);
       setFields(f);
@@ -461,6 +486,88 @@ export default function DocumentDetailPage() {
     load();
   };
 
+  const addToBucket = async () => {
+    if (!id || !addBucketId) return;
+    setBucketSaving(true);
+    try {
+      await api.addDocumentToBucket(id, addBucketId);
+      setAddBucketId('');
+      const updated = await api.getDocumentBuckets(id);
+      setDocBuckets(updated);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setBucketSaving(false);
+    }
+  };
+
+  const removeFromBucket = async (bucketDocumentId: string) => {
+    if (!id || !confirm('Remove document from this bucket?')) return;
+    await api.removeDocumentFromBucket(id, bucketDocumentId);
+    const updated = await api.getDocumentBuckets(id);
+    setDocBuckets(updated);
+  };
+
+  const loadRelated = async () => {
+    if (!id || relatedDocs !== null) return;
+    setRelatedLoading(true);
+    try {
+      const res = await api.getRelatedDocuments(id);
+      setRelatedDocs(res.related);
+    } catch (e) {
+      console.error(e);
+      setRelatedDocs([]);
+    } finally {
+      setRelatedLoading(false);
+    }
+  };
+
+  const loadComments = async () => {
+    if (!id) return;
+    setCommentsLoading(true);
+    try {
+      const data = await api.getDocumentComments(id);
+      setComments(data);
+    } catch { setComments([]); }
+    finally { setCommentsLoading(false); }
+  };
+
+  const loadHistory = async () => {
+    if (!id) return;
+    setHistoryLoading(true);
+    try {
+      const [log, vers] = await Promise.all([
+        api.getDocumentAuditLog(id),
+        api.getDocumentVersions(id),
+      ]);
+      setAuditEntries(log);
+      setVersions(vers);
+    } catch { setAuditEntries([]); setVersions([]); }
+    finally { setHistoryLoading(false); }
+  };
+
+  const handleArchive = async () => {
+    if (!id || !doc) return;
+    if (doc.archived_at) {
+      await api.unarchiveDocument(id);
+    } else {
+      if (!confirm('Archive this document? It will be hidden from the main list.')) return;
+      await api.archiveDocument(id);
+    }
+    load();
+  };
+
+  const handleTrash = async () => {
+    if (!id || !doc) return;
+    if (doc.trashed_at) {
+      await api.restoreDocument(id);
+    } else {
+      if (!confirm('Move to trash? Admins can permanently delete trashed documents.')) return;
+      await api.trashDocument(id);
+    }
+    load();
+  };
+
   if (loading) return <div className="text-gray-500">Loading...</div>;
   if (!doc) return <div className="text-red-400">Document not found</div>;
 
@@ -488,9 +595,30 @@ export default function DocumentDetailPage() {
             {isLocked && wfState?.locked_by_name && (
               <span className="text-xs text-yellow-400">Locked by {wfState.locked_by_name}</span>
             )}
+            {doc.archived_at && <Badge value="archived" />}
+            {doc.trashed_at && <Badge value="trashed" />}
+            {doc.compressed_at && <Badge value="compressed" />}
             <span className="text-xs text-gray-500">{new Date(doc.created_at).toLocaleString()}</span>
           </div>
         </div>
+        {/* Archive / Trash quick actions */}
+        {!doc.trashed_at && (
+          <button onClick={handleArchive}
+            title={doc.archived_at ? 'Unarchive document' : 'Archive document'}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+              doc.archived_at ? 'bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20' : 'bg-gray-800 text-gray-400 hover:text-yellow-400'
+            }`}>
+            <Archive size={14} /> {doc.archived_at ? 'Unarchive' : 'Archive'}
+          </button>
+        )}
+        <button onClick={handleTrash}
+          title={doc.trashed_at ? 'Restore from trash' : 'Move to trash'}
+          className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+            doc.trashed_at ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20' : 'bg-gray-800 text-gray-400 hover:text-red-400'
+          }`}>
+          {doc.trashed_at ? <><RotateCcw size={14} /> Restore</> : <><Trash2 size={14} /> Trash</>}
+        </button>
+
         {wfState?.workflow_state && (
           <button
             onClick={toggleState}
@@ -530,17 +658,26 @@ export default function DocumentDetailPage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-gray-800">
+      <div className="flex gap-1 border-b border-gray-800 overflow-x-auto">
         {([
           { key: 'confidence' as Tab, label: 'Confidence', icon: <ShieldCheck size={14} /> },
           { key: 'original' as Tab, label: 'Original Doc', icon: <Eye size={14} /> },
           { key: 'extraction' as Tab, label: `Extraction (${fields.length + entityDetails.length})`, icon: <Layers size={14} /> },
           { key: 'ocr' as Tab, label: 'OCR Text', icon: <FileText size={14} /> },
+          { key: 'notes' as Tab, label: `Notes (${comments.length})`, icon: <MessageSquare size={14} /> },
+          { key: 'history' as Tab, label: 'History', icon: <Clock size={14} /> },
+          { key: 'relations' as Tab, label: 'Relations', icon: <Network size={14} /> },
           { key: 'info' as Tab, label: 'Info', icon: <Info size={14} /> },
         ]).map(t => (
           <button
-            key={t.key} onClick={() => setTab(t.key)}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            key={t.key}
+            onClick={() => {
+              setTab(t.key);
+              if (t.key === 'relations') loadRelated();
+              if (t.key === 'notes') loadComments();
+              if (t.key === 'history') loadHistory();
+            }}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
               tab === t.key ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300'
             }`}
           >
@@ -783,39 +920,216 @@ export default function DocumentDetailPage() {
         </div>
       )}
 
+      {tab === 'relations' && (
+        <div className="space-y-6">
+          {/* Entities on this document */}
+          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-gray-800">
+              <h3 className="text-sm font-semibold text-white">Entities in this Document</h3>
+              <p className="text-xs text-gray-500 mt-0.5">Entities extracted from this document. Click an entity to open its admin profile.</p>
+            </div>
+            {entityDetails.length === 0 ? (
+              <div className="p-8 text-center text-gray-600 text-sm">No entities found in this document.</div>
+            ) : (
+              <div className="divide-y divide-gray-800/60">
+                {entityDetails.map(e => (
+                  <div key={e.entity_id} className="flex items-center justify-between px-4 py-3 hover:bg-gray-800/30">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center">
+                        <span className="text-xs font-bold text-indigo-400">{(e.name || '?')[0].toUpperCase()}</span>
+                      </div>
+                      <div>
+                        <div className="text-sm font-medium text-gray-200">{e.canonical_name || e.name}</div>
+                        <div className="text-xs text-gray-500">{e.entity_type} · {e.role}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs font-semibold ${confidenceTone(e.confidence)}`}>{pct(e.confidence)}</span>
+                      <a href={`/admin/entities/${e.entity_id}`} className="text-xs text-blue-500 hover:text-blue-400 px-2 py-1 rounded hover:bg-blue-500/10 transition-colors">
+                        View profile →
+                      </a>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Related documents */}
+          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-gray-800">
+              <h3 className="text-sm font-semibold text-white">Related Documents</h3>
+              <p className="text-xs text-gray-500 mt-0.5">Other documents in your organization that share entities with this one, ranked by number of shared entities.</p>
+            </div>
+            {relatedLoading ? (
+              <div className="p-8 flex items-center justify-center gap-2 text-gray-500 text-sm">
+                <Loader2 size={16} className="animate-spin" /> Loading relations...
+              </div>
+            ) : relatedDocs === null ? (
+              <div className="p-8 text-center text-gray-600 text-sm">Click Relations tab to load.</div>
+            ) : relatedDocs.length === 0 ? (
+              <div className="p-8 text-center text-gray-600 text-sm">No related documents found.</div>
+            ) : (
+              <div className="divide-y divide-gray-800/60">
+                {relatedDocs.map(r => (
+                  <div key={r.document_id} className="px-4 py-3 hover:bg-gray-800/30">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <a href={`/documents/${r.document_id}`} className="text-sm font-medium text-gray-200 hover:text-blue-400 truncate block">
+                          {r.filename}
+                        </a>
+                        <div className="flex items-center gap-2 mt-1">
+                          {r.classification_label && <Badge value={r.classification_label} />}
+                          <span className="text-xs text-gray-600">{new Date(r.created_at).toLocaleDateString()}</span>
+                        </div>
+                      </div>
+                      <div className="flex-shrink-0 text-right">
+                        <div className="text-sm font-semibold text-indigo-400">{r.shared_entity_count}</div>
+                        <div className="text-xs text-gray-600">shared entit{r.shared_entity_count === 1 ? 'y' : 'ies'}</div>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {r.shared_entities.map(e => (
+                        <span key={e.entity_id} className="rounded-full bg-indigo-500/10 border border-indigo-500/20 px-2 py-0.5 text-xs text-indigo-300">
+                          {e.name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {tab === 'info' && (
-        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-          <table className="w-full text-sm">
-            <tbody>
-              {([
-                ['Filename', doc.filename],
-                ['Extension', doc.original_extension],
-                ['Source', doc.source],
-                ['Mode', doc.mode],
-                ['Status', doc.status],
-                ['PDF', doc.pdf_url ? 'Available' : 'N/A'],
-                ['File Size', doc.file_size_bytes != null ? `${(doc.file_size_bytes / 1024).toFixed(1)} KB` : 'N/A'],
-                ['Page Count', doc.page_count != null ? String(doc.page_count) : 'N/A'],
-                ['Cluster ID', doc.cluster_id != null ? String(doc.cluster_id) : 'N/A'],
-                ['Classification', doc.classification_label || 'N/A'],
-                ['Subcategory', doc.classification_subcategory_label || 'N/A'],
-                ['Classification Path', doc.classification_path?.join(' / ') || 'N/A'],
-                ['Classification Method', doc.classification_method || 'N/A'],
-                ['Classification Confidence', doc.classification_confidence != null ? `${(doc.classification_confidence * 100).toFixed(1)}%` : 'N/A'],
-                ['OCR Method', doc.ocr_method || 'N/A'],
-                ['OCR Confidence', doc.ocr_confidence != null ? `${(doc.ocr_confidence * 100).toFixed(1)}%` : 'N/A'],
-                ['Pipeline Confidence', globalConf != null ? `${(globalConf * 100).toFixed(1)}%` : 'N/A'],
-                ['Created', new Date(doc.created_at).toLocaleString()],
-                ['Updated', doc.updated_at ? new Date(doc.updated_at).toLocaleString() : 'N/A'],
-                ['Processed', doc.processed_at ? new Date(doc.processed_at).toLocaleString() : 'N/A'],
-              ] as [string, string][]).map(([label, val]) => (
-                <tr key={label} className="border-b border-gray-800/50">
-                  <td className="px-4 py-2.5 text-gray-500 font-medium w-56">{label}</td>
-                  <td className="px-4 py-2.5 text-gray-300">{val}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-6">
+          {/* Bucket membership */}
+          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-white flex items-center gap-2"><FolderOpen size={14} /> Bucket Assignments</h3>
+                <p className="text-xs text-gray-500 mt-0.5">Manually manage which buckets this document belongs to.</p>
+              </div>
+            </div>
+
+            {/* Current assignments */}
+            {docBuckets.length === 0 ? (
+              <div className="px-4 py-4 text-sm text-gray-600">Not assigned to any bucket.</div>
+            ) : (
+              <div className="divide-y divide-gray-800/60">
+                {docBuckets.map(bd => (
+                  <div key={bd.bucket_document_id} className="flex items-center justify-between px-4 py-3">
+                    <div>
+                      <div className="text-sm font-medium text-gray-200">{bd.bucket_name}</div>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <Badge value={bd.workflow_state} />
+                        <span className="text-xs text-gray-600">since {new Date(bd.created_at).toLocaleDateString()}</span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => removeFromBucket(bd.bucket_document_id)}
+                      className="p-1.5 rounded hover:bg-red-500/10 text-gray-600 hover:text-red-400 transition-colors"
+                      title="Remove from bucket"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Add to bucket */}
+            <div className="px-4 py-3 border-t border-gray-800 flex items-center gap-2">
+              <select
+                value={addBucketId}
+                onChange={e => setAddBucketId(e.target.value)}
+                className="flex-1 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">Add to bucket…</option>
+                {allBuckets
+                  .filter(b => !docBuckets.some(db => db.bucket_id === b.id))
+                  .map(b => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                  ))}
+              </select>
+              <button
+                disabled={!addBucketId || bucketSaving}
+                onClick={addToBucket}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-500 disabled:opacity-40 transition-colors"
+              >
+                <Plus size={14} /> {bucketSaving ? 'Adding…' : 'Add'}
+              </button>
+            </div>
+          </div>
+
+          {/* Metadata table */}
+          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <tbody>
+                {([
+                  ['Filename', doc.filename],
+                  ['Extension', doc.original_extension],
+                  ['Source', doc.source],
+                  ['Mode', doc.mode],
+                  ['Status', doc.status],
+                  ['PDF', doc.pdf_url ? 'Available' : 'N/A'],
+                  ['File Size', doc.file_size_bytes != null ? `${(doc.file_size_bytes / 1024).toFixed(1)} KB` : 'N/A'],
+                  ['Page Count', doc.page_count != null ? String(doc.page_count) : 'N/A'],
+                  ['Cluster ID', doc.cluster_id != null ? String(doc.cluster_id) : 'N/A'],
+                  ['Classification', doc.classification_label || 'N/A'],
+                  ['Subcategory', doc.classification_subcategory_label || 'N/A'],
+                  ['Classification Path', doc.classification_path?.join(' / ') || 'N/A'],
+                  ['Classification Method', doc.classification_method || 'N/A'],
+                  ['Classification Confidence', doc.classification_confidence != null ? `${(doc.classification_confidence * 100).toFixed(1)}%` : 'N/A'],
+                  ['OCR Method', doc.ocr_method || 'N/A'],
+                  ['OCR Confidence', doc.ocr_confidence != null ? `${(doc.ocr_confidence * 100).toFixed(1)}%` : 'N/A'],
+                  ['Pipeline Confidence', globalConf != null ? `${(globalConf * 100).toFixed(1)}%` : 'N/A'],
+                  ['Created', new Date(doc.created_at).toLocaleString()],
+                  ['Updated', doc.updated_at ? new Date(doc.updated_at).toLocaleString() : 'N/A'],
+                  ['Processed', doc.processed_at ? new Date(doc.processed_at).toLocaleString() : 'N/A'],
+                ] as [string, string][]).map(([label, val]) => (
+                  <tr key={label} className="border-b border-gray-800/50">
+                    <td className="px-4 py-2.5 text-gray-500 font-medium w-56">{label}</td>
+                    <td className="px-4 py-2.5 text-gray-300">{val}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {tab === 'notes' && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <CommentThread
+            comments={comments}
+            loading={commentsLoading}
+            onAdd={async (content, parentId) => {
+              if (id) { await api.createDocumentComment(id, content, parentId); await loadComments(); }
+            }}
+            onEdit={async (commentId, content) => {
+              if (id) { await api.updateDocumentComment(id, commentId, content); await loadComments(); }
+            }}
+            onDelete={async (commentId) => {
+              if (id && confirm('Delete this note?')) { await api.deleteDocumentComment(id, commentId); await loadComments(); }
+            }}
+          />
+        </div>
+      )}
+
+      {tab === 'history' && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <AuditTimeline
+            entries={auditEntries}
+            versions={versions}
+            loading={historyLoading}
+            onLoadVersion={async (versionId) => {
+              if (!id) throw new Error();
+              return api.getDocumentVersion(id, versionId);
+            }}
+          />
         </div>
       )}
 

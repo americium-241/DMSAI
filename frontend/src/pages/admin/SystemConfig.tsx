@@ -10,7 +10,7 @@ interface ConfigGroup {
   items: SystemConfigItem[];
 }
 
-const GENERAL_CATEGORIES = new Set(['auth', 'ldap', 'email', 'buckets', 'confidence', 'general']);
+const GENERAL_CATEGORIES = new Set(['auth', 'ldap', 'email', 'buckets', 'confidence', 'ingestion', 'general']);
 
 const CATEGORY_META: Record<string, { label: string; description: string; order: number }> = {
   auth: { label: 'Authentication', description: 'Registration, password policy, verification, and lockout settings.', order: 0 },
@@ -18,6 +18,7 @@ const CATEGORY_META: Record<string, { label: string; description: string; order:
   email: { label: 'Email / SMTP', description: 'SMTP configuration used for verification and outgoing emails.', order: 2 },
   buckets: { label: 'Buckets', description: 'Global bucket automation settings.', order: 3 },
   confidence: { label: 'Confidence Scoring', description: 'Global confidence thresholds and scoring weights.', order: 4 },
+  ingestion: { label: 'Ingestion', description: 'Directory watcher and email ingestion settings. Changes take effect on the next poll cycle — no restart needed.', order: 5 },
   general: { label: 'General', description: 'Miscellaneous global settings.', order: 99 },
 };
 
@@ -80,7 +81,7 @@ export default function SystemConfigPage() {
     return val === 'true' || val === 'false';
   };
 
-  const isPasswordField = (key: string) => key.includes('api_key') || key.includes('password') || key.includes('secret');
+  const isPasswordField = (key: string) => key.includes('api_key') || key.includes('password') || key.includes('secret') || key.includes('imap_password');
   const isTextArea = (key: string) => key.includes('weights') || key.includes('filter') || key.includes('dn');
 
   if (loading) return <div className="text-gray-500">Loading system configuration...</div>;

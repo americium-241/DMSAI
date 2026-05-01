@@ -17,6 +17,7 @@ import SystemConfigPage from './pages/admin/SystemConfig';
 import LLMSettingsPage from './pages/admin/LLMSettings';
 import QualityMetricsPage from './pages/admin/QualityMetrics';
 import EntityDetailPage from './pages/admin/EntityDetail';
+import ArchiveManagementPage from './pages/admin/ArchiveManagement';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -55,6 +56,7 @@ function AppRoutes() {
           <Route path="admin/pipeline" element={<PipelinePage />} />
           <Route path="admin/quality-metrics" element={<QualityMetricsPage />} />
           <Route path="admin/entities/:id" element={<EntityDetailPage />} />
+          <Route path="admin/archive" element={<ArchiveManagementPage />} />
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

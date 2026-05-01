@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Upload, Archive, Activity,
   Users, LogOut, ChevronDown, Building2, Sliders, Search,
-  LineChart, Brain,
+  LineChart, Brain, Inbox,
 } from 'lucide-react';
 import { useAuth } from '../auth';
 import { useState } from 'react';
@@ -21,6 +21,7 @@ const ADMIN_NAV = [
   { to: '/admin/general-settings', icon: Sliders, label: 'General Settings' },
   { to: '/admin/pipeline', icon: Activity, label: 'Pipeline' },
   { to: '/admin/quality-metrics', icon: LineChart, label: 'Quality Metrics' },
+  { to: '/admin/archive', icon: Inbox, label: 'Archive & Trash' },
 ];
 
 export default function Layout() {

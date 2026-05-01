@@ -35,6 +35,11 @@ _shared_path = str(PROJECT_ROOT / "shared")
 if _shared_path not in sys.path:
     sys.path.insert(0, _shared_path)
 
+# Test fixtures package
+_fixtures_path = str(Path(__file__).resolve().parent)
+if _fixtures_path not in sys.path:
+    sys.path.insert(0, _fixtures_path)
+
 # ---------------------------------------------------------------------------
 # 2. Session-scoped temp directory & config
 # ---------------------------------------------------------------------------
@@ -130,6 +135,9 @@ ocr_logic = sys.modules.get("ocr_src.ocr_logic")
 def _setup_teardown():
     from dmsai_models import init_db
     init_db()
+    # Populate example_docs with synthetic fixtures so all tests can run
+    from fixtures.create_test_docs import ensure_example_docs
+    ensure_example_docs(EXAMPLE_DOCS)
     yield
     os.chdir(_ORIGINAL_CWD)
     shutil.rmtree(_TEST_DIR, ignore_errors=True)
@@ -160,103 +168,20 @@ def first_doc_bytes(first_doc: Path) -> bytes:
 # 5. LLM mock responses (realistic, deterministic)
 # ---------------------------------------------------------------------------
 
-MOCK_CLASSIFICATION_RESPONSE = json.dumps({
-    "category": "invoice",
-    "subcategory": None,
-    "confidence": 0.92,
-    "is_new": False,
-    "definition": "Commercial invoice",
-    "subcategory_is_new": False,
-    "subcategory_definition": "",
-})
-
-MOCK_ENTITY_EXTRACTION_RESPONSE = json.dumps([
-    {
-        "name": "ACME Corporation",
-        "entity_type": "company",
-        "role": "issuer",
-        "confidence": 0.91,
-        "fields": {
-            "address": "12 Rue de la Paix, 75002 Paris",
-            "tax_id": "FR12345678901",
-            "email": "contact@acme-corp.fr",
-        },
-    },
-    {
-        "name": "John Doe",
-        "entity_type": "person",
-        "role": "recipient",
-        "confidence": 0.87,
-        "fields": {
-            "email": "john.doe@example.com",
-        },
-    },
-])
-
-MOCK_ENTITY_EXTRACTION_RESPONSE_2 = json.dumps([
-    {
-        "name": "ACME Corp.",
-        "entity_type": "company",
-        "role": "issuer",
-        "confidence": 0.89,
-        "fields": {
-            "address": "12 Rue de la Paix, Paris",
-            "tax_id": "FR12345678901",
-        },
-    },
-    {
-        "name": "Jane Smith",
-        "entity_type": "person",
-        "role": "recipient",
-        "confidence": 0.85,
-        "fields": {
-            "email": "jane.smith@example.com",
-        },
-    },
-])
-
-MOCK_FIELD_DETECT_RESPONSE = json.dumps([
-    "invoice_number",
-    "date",
-    "total_amount",
-    "tax_amount",
-    "due_date",
-])
-
-MOCK_FIELD_EXTRACT_RESPONSE = json.dumps({
-    "values": {
-        "invoice_number": "INV-2026-001",
-        "date": "2026-04-15",
-        "total_amount": "1 200,00 \u20ac",
-        "tax_amount": "200,00 \u20ac",
-        "due_date": "2026-05-15",
-    },
-    "confidences": {
-        "invoice_number": 0.95,
-        "date": 0.93,
-        "total_amount": 0.90,
-        "tax_amount": 0.88,
-        "due_date": 0.85,
-    },
-})
-
-MOCK_CANONICAL_MAP_EXISTING = json.dumps({"match": "total_amount"})
-MOCK_CANONICAL_MAP_NEW = json.dumps({
-    "new": "due_date",
-    "description": "Payment due date for the document",
-})
-
-
-def make_llm_side_effect(responses: list[str]):
-    """Create an async callable that cycles through given responses."""
-    idx = {"i": 0}
-
-    async def _side_effect(*args, **kwargs):
-        resp = responses[idx["i"] % len(responses)]
-        idx["i"] += 1
-        return resp
-
-    return _side_effect
+# Re-export from the fixtures module so tests can import from conftest OR
+# directly from fixtures.mock_responses (avoids conftest shadowing issues).
+from fixtures.mock_responses import (  # noqa: E402
+    MOCK_CLASSIFICATION_RESPONSE,
+    MOCK_ENTITY_EXTRACTION_RESPONSE,
+    MOCK_ENTITY_EXTRACTION_RESPONSE_2,
+    MOCK_FIELD_DETECT_RESPONSE,
+    MOCK_FIELD_EXTRACT_RESPONSE,
+    MOCK_CANONICAL_MAP_EXISTING,
+    MOCK_CANONICAL_MAP_NEW,
+    MOCK_ENTITY_RESOLUTION_SAME,
+    MOCK_ENTITY_RESOLUTION_DIFFERENT,
+    make_llm_side_effect,
+)
 
 
 @pytest.fixture
@@ -281,10 +206,14 @@ def mock_llm_entity_extraction():
 
 @pytest.fixture
 def mock_llm_entity_resolution():
-    from conftest import entity_resolution_logic as erl
+    """Mock the resolution LLM to always say entities are different (safe default).
+
+    Use return_value=MOCK_ENTITY_RESOLUTION_SAME in specific tests that need a merge.
+    """
     with patch.object(
-        erl, "_call_llm",
+        entity_resolution_logic, "_call_llm",
         new_callable=AsyncMock,
+        return_value=MOCK_ENTITY_RESOLUTION_DIFFERENT,
     ) as m:
         yield m
 

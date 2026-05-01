@@ -25,6 +25,7 @@ export default function DocumentsPage() {
   const [statusFilter, setStatusFilter] = useState('');
   const [classFilter, setClassFilter] = useState('');
   const [nameFilter, setNameFilter] = useState('');
+  const [lifecycleFilter, setLifecycleFilter] = useState<'' | 'archived' | 'trashed'>('');
 
   // Content search
   const [contentQuery, setContentQuery] = useState('');
@@ -49,6 +50,8 @@ export default function DocumentsPage() {
       if (statusFilter) params.status = statusFilter;
       if (classFilter) params.classification = classFilter;
       if (nameFilter) params.search = nameFilter;
+      if (lifecycleFilter === 'archived') params.archived = 'true';
+      if (lifecycleFilter === 'trashed') params.trashed = 'true';
       const res = await api.getDocuments(params);
       setDocs(res.documents);
       setSearchResults([]);
@@ -155,10 +158,11 @@ export default function DocumentsPage() {
     setStatusFilter('');
     setClassFilter('');
     setNameFilter('');
+    setLifecycleFilter('');
     setPage(1);
   };
 
-  const hasActiveFilters = !!(statusFilter || classFilter || nameFilter);
+  const hasActiveFilters = !!(statusFilter || classFilter || nameFilter || lifecycleFilter);
 
   const entityTotalPages = Math.ceil(entitiesTotal / ENTITY_PAGE_SIZE);
 
@@ -204,6 +208,12 @@ export default function DocumentsPage() {
             <option value="INGESTED">Ingested</option>
             <option value="OCR_DONE">OCR Done</option>
             <option value="CLASSIFIED">Classified</option>
+          </select>
+          <select value={lifecycleFilter} onChange={e => { setLifecycleFilter(e.target.value as '' | 'archived' | 'trashed'); setPage(1); loadFiltered(1); }}
+            className="px-3 py-2 rounded-lg bg-gray-900 border border-gray-800 text-gray-300 text-sm focus:outline-none">
+            <option value="">Active documents</option>
+            <option value="archived">Archived</option>
+            <option value="trashed">Trash</option>
           </select>
           <input value={classFilter} onChange={e => { setClassFilter(e.target.value); setPage(1); }}
             className="px-3.5 py-2 rounded-lg bg-gray-900 border border-gray-800 text-white text-sm placeholder-gray-500 focus:outline-none w-40"

@@ -3,7 +3,8 @@
 DMSAI CLI - manage the full application stack.
 
 Usage:
-    python dmsai.py start           Start all services
+    python dmsai.py setup           First-time setup: create .env, generate secrets
+    python dmsai.py start           Start all services (runs setup automatically if needed)
     python dmsai.py stop            Stop all services
     python dmsai.py restart         Restart all services
     python dmsai.py status          Show service status
@@ -264,6 +265,13 @@ def start_service(svc: dict) -> None:
 
 def cmd_start(services: list[dict], skip_litellm: bool) -> None:
     print(f"\n{_c('=== Starting DMSAI ===', CYAN)}\n")
+
+    # Auto-run first-time setup silently if .env is missing
+    if not ENV_FILE.exists():
+        print(f"  {_c('First run — running setup...', YELLOW)}\n")
+        cmd_setup()
+        print()
+
     for svc in services:
         if skip_litellm and svc["kind"] == "litellm":
             print(f"  {_c('SKIP', YELLOW)}  litellm              (--skip-litellm)")
@@ -340,8 +348,9 @@ def cmd_status(services: list[dict]) -> None:
     gw_up = is_port_open(8080)
     fe_up = is_port_open(5173)
     if gw_up and fe_up:
-        print(f"\n  App:  {_c('http://localhost:5173', CYAN)}")
-        print(f"  API:  {_c('http://localhost:8080/api', CYAN)}")
+        print(f"\n  App:   {_c('http://localhost:5173', CYAN)}")
+        print(f"  API:   {_c('http://localhost:8080/api', CYAN)}")
+        print(f"  Docs:  {_c('http://localhost:8080/docs', CYAN)}")
 
     print(f"\n  Logs: {_c(str(LOG_DIR), GRAY)}\n")
 
@@ -375,6 +384,71 @@ def cmd_logs(services: list[dict], target: str) -> None:
                     time.sleep(0.3)
     except KeyboardInterrupt:
         print()
+
+
+def cmd_setup(silent: bool = False) -> bool:
+    """
+    First-time setup: create .env from .env.example and auto-generate secrets.
+    Returns True if any change was made, False if already set up.
+    """
+    changed = False
+
+    if not ENV_FILE.exists():
+        example = ROOT / ".env.example"
+        if not example.exists():
+            print(f"  {_c('Error:', RED)} .env.example not found")
+            sys.exit(1)
+        import shutil
+        shutil.copy(example, ENV_FILE)
+        print(f"  {_c('CREATE', CYAN)}  .env (from .env.example)")
+        changed = True
+    elif not silent:
+        print(f"  {_c('OK', GREEN)}     .env already exists")
+
+    # Reload after possible copy
+    _load_dotenv()
+
+    # Auto-generate secrets if still at placeholder values
+    import secrets as _secrets
+    _lines = ENV_FILE.read_text(encoding="utf-8").splitlines(keepends=True)
+    _updated = False
+    _new_lines = []
+    for line in _lines:
+        stripped = line.strip()
+        if stripped.startswith("DMSAI_JWT_SECRET=change-me") or stripped == "DMSAI_JWT_SECRET=":
+            new_val = _secrets.token_hex(32)
+            _new_lines.append(f"DMSAI_JWT_SECRET={new_val}\n")
+            os.environ["DMSAI_JWT_SECRET"] = new_val
+            _updated = True
+            print(f"  {_c('GENERATE', CYAN)} DMSAI_JWT_SECRET (random)")
+        elif stripped.startswith("DMSAI_INTERNAL_API_KEY=change-me") or stripped == "DMSAI_INTERNAL_API_KEY=":
+            new_val = _secrets.token_hex(24)
+            _new_lines.append(f"DMSAI_INTERNAL_API_KEY={new_val}\n")
+            os.environ["DMSAI_INTERNAL_API_KEY"] = new_val
+            _updated = True
+            print(f"  {_c('GENERATE', CYAN)} DMSAI_INTERNAL_API_KEY (random)")
+        else:
+            _new_lines.append(line)
+    if _updated:
+        ENV_FILE.write_text("".join(_new_lines), encoding="utf-8")
+        changed = True
+
+    # Create required data directories
+    for d in ["data/inbox", "data/processed", "data/storage/documents", "data/models"]:
+        path = ROOT / d
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+            print(f"  {_c('MKDIR', CYAN)}  {d}")
+            changed = True
+
+    if not silent and not changed:
+        print(f"  {_c('OK', GREEN)}     already set up")
+
+    if changed and not silent:
+        print(f"\n  {_c('Setup complete.', GREEN)} Review .env to set your LLM provider, then run:")
+        print(f"  {_c('  python dmsai.py start', CYAN)}\n")
+
+    return changed
 
 
 def cmd_clean_db() -> None:
@@ -416,6 +490,7 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 examples:
+  python dmsai.py setup                First-time setup (auto-runs on first start)
   python dmsai.py start                Start everything
   python dmsai.py start --skip-litellm Start without LiteLLM proxy
   python dmsai.py start --only ocr     Start only the OCR node
@@ -427,6 +502,8 @@ examples:
         """,
     )
     sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("setup", help="First-time setup: create .env, generate secrets, create data dirs")
 
     p_start = sub.add_parser("start", help="Start all services")
     p_start.add_argument("--skip-litellm", action="store_true", help="Don't start LiteLLM proxy")
@@ -458,7 +535,10 @@ examples:
         names = [n.strip() for n in only.split(",")]
         return [s for s in SERVICES if any(n in s["name"] for n in names)]
 
-    if args.command == "start":
+    if args.command == "setup":
+        print(f"\n{_c('=== DMSAI Setup ===', CYAN)}\n")
+        cmd_setup()
+    elif args.command == "start":
         svcs = _filter(args.only)
         cmd_start(svcs, args.skip_litellm)
     elif args.command == "stop":

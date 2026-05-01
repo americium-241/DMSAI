@@ -82,6 +82,9 @@ export interface DocumentSummary {
   created_at: string;
   updated_at: string | null;
   processed_at: string | null;
+  archived_at: string | null;
+  trashed_at: string | null;
+  compressed_at: string | null;
 }
 
 export interface DocumentDetail extends DocumentSummary {
@@ -142,6 +145,83 @@ export interface CanonicalDocumentClassItem {
   aliases: string[];
   created_at: string;
   updated_at: string | null;
+}
+
+// ------- Comments -------
+export interface DocumentCommentItem {
+  id: string;
+  document_id: string;
+  user_id: string;
+  author_name: string | null;
+  content: string;
+  parent_id: string | null;
+  created_at: string;
+  updated_at: string | null;
+}
+
+export interface EntityCommentItem {
+  id: string;
+  entity_id: string;
+  user_id: string;
+  author_name: string | null;
+  content: string;
+  parent_id: string | null;
+  created_at: string;
+  updated_at: string | null;
+}
+
+// ------- Audit / Versions -------
+export interface AuditLogEntry {
+  id: string;
+  action: string;
+  user_id: string | null;
+  author_name: string | null;
+  entity_id: string | null;
+  details: string | null;
+  created_at: string;
+}
+
+export interface DocumentVersionItem {
+  id: string;
+  version_number: number;
+  created_by: string | null;
+  author_name: string | null;
+  created_at: string;
+  summary: string;
+}
+
+export interface DocumentVersionDetail extends DocumentVersionItem {
+  snapshot: Record<string, unknown> | null;
+}
+
+// ------- Archive -------
+export interface ArchivedDocumentSummary {
+  id: string;
+  filename: string;
+  status: string;
+  classification_label: string | null;
+  archived_at: string | null;
+  trashed_at: string | null;
+  compressed_at: string | null;
+  created_at: string;
+}
+
+export interface ArchiveListResponse {
+  total: number;
+  documents: ArchivedDocumentSummary[];
+}
+
+export interface CompactResult {
+  status: string;
+  compressed: string[];
+  already_done: string[];
+  skipped: string[];
+}
+
+export interface PurgeTrashResult {
+  status: string;
+  trash_retention_days: number;
+  candidates: { id: string; filename: string; trashed_at: string }[];
 }
 
 export interface SystemConfigItem {
@@ -323,6 +403,31 @@ export interface EntityDossierResponse {
     created_at: string;
   }[];
   timeline: { document_id: string; filename: string; role: string; at: string }[];
+}
+
+export interface DocumentBucketItem {
+  bucket_document_id: string;
+  bucket_id: string;
+  bucket_name: string;
+  workflow_state: string;
+  locked_by: string | null;
+  created_at: string;
+}
+
+export interface RelatedDocument {
+  document_id: string;
+  filename: string;
+  classification_label: string | null;
+  classification_subcategory_label: string | null;
+  status: string;
+  created_at: string;
+  shared_entity_count: number;
+  shared_entities: { entity_id: string; name: string; entity_type: string }[];
+}
+
+export interface RelatedDocumentsResponse {
+  document_id: string;
+  related: RelatedDocument[];
 }
 
 // ---------------------------------------------------------------------------
@@ -649,5 +754,106 @@ export const api = {
 
   getRecentActivity(limit = 30) {
     return request<{ items: ActivityItem[] }>(`/activity/recent?limit=${limit}`);
+  },
+
+  // Document buckets (manual assignment)
+  getDocumentBuckets(docId: string) {
+    return request<DocumentBucketItem[]>(`/documents/${docId}/buckets`);
+  },
+  addDocumentToBucket(docId: string, bucketId: string) {
+    return request<DocumentBucketItem & { status: string }>(`/documents/${docId}/buckets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bucket_id: bucketId }),
+    });
+  },
+  removeDocumentFromBucket(docId: string, bucketDocumentId: string) {
+    return request<{ status: string }>(`/documents/${docId}/buckets/${bucketDocumentId}`, { method: 'DELETE' });
+  },
+
+  // Document relations
+  getRelatedDocuments(docId: string, limit = 20) {
+    return request<RelatedDocumentsResponse>(`/documents/${docId}/related?limit=${limit}`);
+  },
+
+  // ---- Comments ----
+  getDocumentComments(docId: string) {
+    return request<DocumentCommentItem[]>(`/documents/${docId}/comments`);
+  },
+  createDocumentComment(docId: string, content: string, parentId?: string) {
+    return request<{ id: string; status: string }>(`/documents/${docId}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, parent_id: parentId ?? null }),
+    });
+  },
+  updateDocumentComment(docId: string, commentId: string, content: string) {
+    return request<{ status: string }>(`/documents/${docId}/comments/${commentId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+  },
+  deleteDocumentComment(docId: string, commentId: string) {
+    return request<{ status: string }>(`/documents/${docId}/comments/${commentId}`, { method: 'DELETE' });
+  },
+  getEntityComments(entityId: string) {
+    return request<EntityCommentItem[]>(`/entities/${entityId}/comments`);
+  },
+  createEntityComment(entityId: string, content: string, parentId?: string) {
+    return request<{ id: string; status: string }>(`/entities/${entityId}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, parent_id: parentId ?? null }),
+    });
+  },
+  updateEntityComment(entityId: string, commentId: string, content: string) {
+    return request<{ status: string }>(`/entities/${entityId}/comments/${commentId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+  },
+  deleteEntityComment(entityId: string, commentId: string) {
+    return request<{ status: string }>(`/entities/${entityId}/comments/${commentId}`, { method: 'DELETE' });
+  },
+
+  // ---- Archive / Trash ----
+  archiveDocument(docId: string) {
+    return request<{ status: string; archived_at?: string }>(`/documents/${docId}/archive`, { method: 'POST' });
+  },
+  unarchiveDocument(docId: string) {
+    return request<{ status: string }>(`/documents/${docId}/unarchive`, { method: 'POST' });
+  },
+  trashDocument(docId: string) {
+    return request<{ status: string; trashed_at?: string }>(`/documents/${docId}/trash`, { method: 'POST' });
+  },
+  restoreDocument(docId: string) {
+    return request<{ status: string }>(`/documents/${docId}/restore`, { method: 'POST' });
+  },
+  permanentDeleteDocument(docId: string) {
+    return request<{ status: string }>(`/documents/${docId}/permanent`, { method: 'DELETE' });
+  },
+  getArchivedDocuments(status: 'archived' | 'trashed' = 'archived', page = 1) {
+    return request<ArchiveListResponse>(`/admin/archive?status=${status}&page=${page}`);
+  },
+  compactStorage() {
+    return request<CompactResult>('/admin/storage/compact', { method: 'POST' });
+  },
+  purgeTrashCandidates() {
+    return request<PurgeTrashResult>('/admin/storage/purge-trash', { method: 'POST' });
+  },
+
+  // ---- Versions ----
+  getDocumentVersions(docId: string) {
+    return request<DocumentVersionItem[]>(`/documents/${docId}/versions`);
+  },
+  getDocumentVersion(docId: string, versionId: string) {
+    return request<DocumentVersionDetail>(`/documents/${docId}/versions/${versionId}`);
+  },
+
+  // ---- Audit Log ----
+  getDocumentAuditLog(docId: string, limit = 100) {
+    return request<AuditLogEntry[]>(`/documents/${docId}/audit-log?limit=${limit}`);
   },
 };

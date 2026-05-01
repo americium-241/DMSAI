@@ -18,6 +18,10 @@ from .models import (
     SystemConfig,
     Correction,
     PipelineEvent,
+    DocumentComment,
+    EntityComment,
+    DocumentAuditLog,
+    DocumentVersion,
 )
 from .connection import get_engine, get_session, init_db
 from .pipeline_events import record_pipeline_event
@@ -48,6 +52,10 @@ __all__ = [
     "SystemConfig",
     "Correction",
     "PipelineEvent",
+    "DocumentComment",
+    "EntityComment",
+    "DocumentAuditLog",
+    "DocumentVersion",
     "get_engine",
     "get_session",
     "init_db",

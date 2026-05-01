@@ -15,7 +15,8 @@ from sqlmodel import select, func, or_
 
 from dmsai_models import (
     Document, DocumentField, DocumentEntity, Entity, EntityField,
-    BucketDocument, User, Correction, PipelineEvent,
+    Bucket, BucketDocument, User, Correction, PipelineEvent,
+    DocumentAuditLog, DocumentVersion,
     get_session, init_db,
 )
 from auth import get_current_user
@@ -31,6 +32,57 @@ def _verify_doc_org(doc: Document, user: User) -> None:
     """Raise 404 if the document doesn't belong to the user's organization."""
     if doc.organization_id != user.organization_id:
         raise HTTPException(status_code=404, detail="Document not found")
+
+
+def _record_audit(session, document_id: str, user_id: Optional[str], action: str,
+                  details: Optional[str] = None, entity_id: Optional[str] = None) -> None:
+    session.add(DocumentAuditLog(
+        id=str(uuid.uuid4()),
+        document_id=document_id,
+        entity_id=entity_id,
+        user_id=user_id,
+        action=action,
+        details=details,
+        created_at=datetime.utcnow(),
+    ))
+
+
+def _next_version_number(session, document_id: str) -> int:
+    from sqlmodel import select as _sel
+    existing = session.exec(
+        _sel(DocumentVersion).where(DocumentVersion.document_id == document_id)
+        .order_by(DocumentVersion.version_number.desc())
+    ).first()
+    return (existing.version_number + 1) if existing else 1
+
+
+def _create_version_snapshot(session, doc: Document, user_id: Optional[str], summary: str) -> None:
+    import json as _json
+    fields = session.exec(select(DocumentField).where(DocumentField.document_id == doc.id)).all()
+    links = session.exec(select(DocumentEntity).where(DocumentEntity.document_id == doc.id)).all()
+    entities = []
+    for link in links:
+        entity = session.get(Entity, link.entity_id)
+        if entity:
+            entities.append({"role": link.role, "entity_id": entity.id, "name": entity.name})
+    snapshot = _json.dumps({
+        "filename": doc.filename,
+        "status": doc.status,
+        "classification_label": doc.classification_label,
+        "classification_subcategory_label": doc.classification_subcategory_label,
+        "pipeline_confidence": doc.pipeline_confidence,
+        "fields": {f.field_name: f.field_value for f in fields},
+        "entities": entities,
+    })
+    session.add(DocumentVersion(
+        id=str(uuid.uuid4()),
+        document_id=doc.id,
+        version_number=_next_version_number(session, doc.id),
+        created_by=user_id,
+        created_at=datetime.utcnow(),
+        summary=summary,
+        snapshot_json=snapshot,
+    ))
 
 
 def _get_doc_or_404(session, document_id: str, user: User) -> Document:
@@ -69,6 +121,9 @@ def _doc_to_response(doc: Document) -> dict:
         "created_at": str(doc.created_at),
         "updated_at": str(doc.updated_at) if doc.updated_at else None,
         "processed_at": str(doc.processed_at) if doc.processed_at else None,
+        "archived_at": str(doc.archived_at) if doc.archived_at else None,
+        "trashed_at": str(doc.trashed_at) if doc.trashed_at else None,
+        "compressed_at": str(doc.compressed_at) if doc.compressed_at else None,
     }
 
 
@@ -85,13 +140,15 @@ def _json_or_none(raw: Optional[str]):
 # Document CRUD
 # ---------------------------------------------------------------------------
 
-@router.get("/documents")
+@router.get("/documents", summary="List documents", description="Return a paginated list of documents in the current organization. Filter by status, classification, entity, or free-text search.")
 async def list_documents(
     status: Optional[str] = None,
     mode: Optional[str] = None,
     classification: Optional[str] = None,
     entity_id: Optional[str] = None,
     search: Optional[str] = None,
+    archived: Optional[str] = Query(None, description="'true' = only archived, 'false' = exclude archived"),
+    trashed: Optional[str] = Query(None, description="'true' = only trashed"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     user: User = Depends(get_current_user),
@@ -101,6 +158,13 @@ async def list_documents(
         query = select(Document).where(
             Document.organization_id == user.organization_id
         )
+        # By default exclude archived and trashed from the normal listing
+        if trashed == "true":
+            query = query.where(Document.trashed_at.isnot(None))
+        elif archived == "true":
+            query = query.where(Document.archived_at.isnot(None), Document.trashed_at.is_(None))
+        else:
+            query = query.where(Document.archived_at.is_(None), Document.trashed_at.is_(None))
         if status:
             query = query.where(Document.status == status)
         if mode:
@@ -130,7 +194,7 @@ async def list_documents(
     return {"total": total, "page": page, "page_size": page_size, "documents": doc_payload}
 
 
-@router.get("/documents/{document_id}")
+@router.get("/documents/{document_id}", summary="Get document", description="Full document detail including OCR text, classification, confidence details, extracted fields, and entities. Check `status`: `PENDING` → processing, `COMPLETED` → all stages done, `FAILED` → pipeline error.")
 async def get_document(document_id: str, user: User = Depends(get_current_user)):
     with get_session() as session:
         doc = _get_doc_or_404(session, document_id, user)
@@ -139,7 +203,7 @@ async def get_document(document_id: str, user: User = Depends(get_current_user))
         return result
 
 
-@router.get("/documents/{document_id}/pdf")
+@router.get("/documents/{document_id}/pdf", summary="Download PDF", description="Stream the normalized PDF for this document. The file is generated by the conversion node.")
 async def get_document_pdf(document_id: str, user: User = Depends(get_current_user)):
     with get_session() as session:
         doc = _get_doc_or_404(session, document_id, user)
@@ -152,7 +216,7 @@ async def get_document_pdf(document_id: str, user: User = Depends(get_current_us
     return FileResponse(storage_path, media_type="application/pdf", filename=f"{filename}.pdf")
 
 
-@router.get("/documents/{document_id}/fields")
+@router.get("/documents/{document_id}/fields", summary="Get document fields", description="Return all structured fields extracted by the field extraction node, with per-field confidence scores and canonical names.")
 async def get_document_fields(document_id: str, user: User = Depends(get_current_user)):
     with get_session() as session:
         _get_doc_or_404(session, document_id, user)
@@ -244,6 +308,8 @@ async def update_document(document_id: str, body: DocumentUpdate, user: User = D
             doc.classification_path = json.dumps(path) if path else None
         doc.updated_at = datetime.utcnow()
         session.add(doc)
+        _record_audit(session, document_id, user.id, "classification_edited",
+                      f"{body.classification_label or ''} / {body.classification_subcategory_label or ''}")
         session.commit()
     return {"status": "updated"}
 
@@ -283,6 +349,8 @@ async def update_field(document_id: str, field_id: str, body: FieldUpdate, user:
             field.field_name = body.field_name
         field.extraction_method = "manual"
         session.add(field)
+        _record_audit(session, document_id, user.id, "field_edited",
+                      f"{old_name}={old_value} → {field.field_name}={field.field_value}")
         session.commit()
     return {"status": "updated"}
 
@@ -300,6 +368,8 @@ async def create_field(document_id: str, body: FieldCreate, user: User = Depends
         field_id = field.id
         field_name = field.field_name
         field_value = field.field_value
+        _record_audit(session, document_id, user.id, "field_added",
+                      f"{body.field_name}={body.field_value}")
         session.commit()
     return {"id": field_id, "field_name": field_name, "field_value": field_value}
 
@@ -311,6 +381,8 @@ async def delete_field(document_id: str, field_id: str, user: User = Depends(get
         field = session.get(DocumentField, field_id)
         if not field or field.document_id != document_id:
             raise HTTPException(status_code=404, detail="Field not found")
+        _record_audit(session, document_id, user.id, "field_deleted",
+                      f"{field.field_name}={field.field_value}")
         session.delete(field)
         session.commit()
     return {"status": "deleted"}
@@ -400,6 +472,9 @@ async def resolve_document_entity(
             session.add(link)
             resolved_link_id = link.id
 
+        _record_audit(session, document_id, user.id, "entity_resolved",
+                      f"Role {link.role}: {_entity_correction_value(source)} → {_entity_correction_value(target)}",
+                      entity_id=body.target_entity_id)
         session.commit()
     return {"status": "resolved", "link_id": resolved_link_id, "entity_id": body.target_entity_id}
 
@@ -447,6 +522,10 @@ async def update_entity_field(entity_id: str, field_id: str, body: EntityFieldUp
             ))
             ef.field_name = body.field_name
         session.add(ef)
+        if doc_id:
+            _record_audit(session, doc_id, user.id, "entity_field_edited",
+                          f"[entity {entity_id[:8]}] {old_name}={old_value} → {ef.field_name}={ef.field_value}",
+                          entity_id=entity_id)
         session.commit()
     return {"status": "updated"}
 
@@ -463,6 +542,12 @@ async def create_entity_field(entity_id: str, body: EntityFieldCreate, user: Use
         entity = session.get(Entity, entity_id)
         if not entity:
             raise HTTPException(status_code=404, detail="Entity not found")
+        link = session.exec(
+            select(DocumentEntity)
+            .join(Document, Document.id == DocumentEntity.document_id)
+            .where(DocumentEntity.entity_id == entity_id)
+            .where(Document.organization_id == user.organization_id)
+        ).first()
         ef = EntityField(
             id=str(uuid.uuid4()), entity_id=entity_id,
             field_name=body.field_name, field_value=body.field_value,
@@ -470,6 +555,10 @@ async def create_entity_field(entity_id: str, body: EntityFieldCreate, user: Use
         )
         session.add(ef)
         ef_id = ef.id
+        if link:
+            _record_audit(session, link.document_id, user.id, "entity_field_added",
+                          f"[entity {entity_id[:8]}] {body.field_name}={body.field_value}",
+                          entity_id=entity_id)
         session.commit()
     return {"id": ef_id, "field_name": body.field_name, "field_value": body.field_value}
 
@@ -481,6 +570,16 @@ async def delete_entity_field(entity_id: str, field_id: str, user: User = Depend
         ef = session.get(EntityField, field_id)
         if not ef or ef.entity_id != entity_id:
             raise HTTPException(status_code=404, detail="Entity field not found")
+        link = session.exec(
+            select(DocumentEntity)
+            .join(Document, Document.id == DocumentEntity.document_id)
+            .where(DocumentEntity.entity_id == entity_id)
+            .where(Document.organization_id == user.organization_id)
+        ).first()
+        if link:
+            _record_audit(session, link.document_id, user.id, "entity_field_deleted",
+                          f"[entity {entity_id[:8]}] {ef.field_name}={ef.field_value}",
+                          entity_id=entity_id)
         session.delete(ef)
         session.commit()
     return {"status": "deleted"}
@@ -642,10 +741,183 @@ async def get_workflow_state(document_id: str, user: User = Depends(get_current_
 
 
 # ---------------------------------------------------------------------------
+# Document ↔ Bucket management
+# ---------------------------------------------------------------------------
+
+class BucketAssign(BaseModel):
+    bucket_id: str
+
+
+@router.get("/documents/{document_id}/buckets")
+async def get_document_buckets(document_id: str, user: User = Depends(get_current_user)):
+    """List all buckets this document belongs to, with workflow state."""
+    with get_session() as session:
+        _get_doc_or_404(session, document_id, user)
+        bds = session.exec(
+            select(BucketDocument).where(BucketDocument.document_id == document_id)
+        ).all()
+        result = []
+        for bd in bds:
+            bucket = session.get(Bucket, bd.bucket_id)
+            if not bucket or bucket.organization_id != user.organization_id:
+                continue
+            result.append({
+                "bucket_document_id": bd.id,
+                "bucket_id": bd.bucket_id,
+                "bucket_name": bucket.name,
+                "workflow_state": bd.workflow_state,
+                "locked_by": bd.locked_by,
+                "created_at": str(bd.created_at),
+            })
+    return result
+
+
+@router.post("/documents/{document_id}/buckets")
+async def add_document_to_bucket(
+    document_id: str,
+    body: BucketAssign,
+    user: User = Depends(get_current_user),
+):
+    """Manually assign this document to a bucket."""
+    with get_session() as session:
+        _get_doc_or_404(session, document_id, user)
+        bucket = session.get(Bucket, body.bucket_id)
+        if not bucket or bucket.organization_id != user.organization_id:
+            raise HTTPException(status_code=404, detail="Bucket not found")
+        existing = session.exec(
+            select(BucketDocument).where(
+                BucketDocument.bucket_id == body.bucket_id,
+                BucketDocument.document_id == document_id,
+            )
+        ).first()
+        if existing:
+            return {
+                "bucket_document_id": existing.id,
+                "bucket_id": existing.bucket_id,
+                "bucket_name": bucket.name,
+                "workflow_state": existing.workflow_state,
+                "status": "already_assigned",
+            }
+        bd = BucketDocument(
+            id=str(uuid.uuid4()),
+            bucket_id=body.bucket_id,
+            document_id=document_id,
+            workflow_state="open",
+            created_at=datetime.utcnow(),
+        )
+        session.add(bd)
+        bd_id = bd.id
+        session.commit()
+    return {
+        "bucket_document_id": bd_id,
+        "bucket_id": body.bucket_id,
+        "bucket_name": bucket.name,
+        "workflow_state": "open",
+        "status": "assigned",
+    }
+
+
+@router.delete("/documents/{document_id}/buckets/{bucket_document_id}")
+async def remove_document_from_bucket(
+    document_id: str,
+    bucket_document_id: str,
+    user: User = Depends(get_current_user),
+):
+    """Remove this document from a bucket."""
+    with get_session() as session:
+        _get_doc_or_404(session, document_id, user)
+        bd = session.get(BucketDocument, bucket_document_id)
+        if not bd or bd.document_id != document_id:
+            raise HTTPException(status_code=404, detail="Bucket assignment not found")
+        bucket = session.get(Bucket, bd.bucket_id)
+        if not bucket or bucket.organization_id != user.organization_id:
+            raise HTTPException(status_code=404, detail="Bucket not found")
+        session.delete(bd)
+        session.commit()
+    return {"status": "removed"}
+
+
+# ---------------------------------------------------------------------------
+# Document relations (shared-entity neighbours)
+# ---------------------------------------------------------------------------
+
+@router.get("/documents/{document_id}/related")
+async def get_related_documents(
+    document_id: str,
+    limit: int = Query(20, ge=1, le=100),
+    user: User = Depends(get_current_user),
+):
+    """
+    Return documents that share at least one entity with this document,
+    ranked by the number of shared entities (descending).
+    """
+    with get_session() as session:
+        _get_doc_or_404(session, document_id, user)
+
+        # All entity_ids linked to this document
+        my_links = session.exec(
+            select(DocumentEntity).where(DocumentEntity.document_id == document_id)
+        ).all()
+        my_entity_ids = {lnk.entity_id for lnk in my_links}
+
+        if not my_entity_ids:
+            return {"document_id": document_id, "related": []}
+
+        # Find other document_ids that share at least one of these entities
+        other_links = session.exec(
+            select(DocumentEntity).where(
+                DocumentEntity.entity_id.in_(my_entity_ids),
+                DocumentEntity.document_id != document_id,
+            )
+        ).all()
+
+        # Group by document_id and count shared entities
+        from collections import defaultdict
+        shared: dict[str, set] = defaultdict(set)
+        for lnk in other_links:
+            shared[lnk.document_id].add(lnk.entity_id)
+
+        if not shared:
+            return {"document_id": document_id, "related": []}
+
+        # Sort by shared entity count descending
+        ranked = sorted(shared.items(), key=lambda x: len(x[1]), reverse=True)[:limit]
+
+        # Filter to org documents only and enrich
+        result = []
+        for other_doc_id, shared_entity_ids in ranked:
+            doc = session.get(Document, other_doc_id)
+            if not doc or doc.organization_id != user.organization_id:
+                continue
+            # Entity details for shared entities
+            entities = []
+            for eid in shared_entity_ids:
+                ent = session.get(Entity, eid)
+                if ent:
+                    entities.append({
+                        "entity_id": ent.id,
+                        "name": ent.canonical_name or ent.name,
+                        "entity_type": ent.entity_type,
+                    })
+            result.append({
+                "document_id": doc.id,
+                "filename": doc.filename,
+                "classification_label": doc.classification_label,
+                "classification_subcategory_label": doc.classification_subcategory_label,
+                "status": doc.status,
+                "created_at": str(doc.created_at),
+                "shared_entity_count": len(shared_entity_ids),
+                "shared_entities": entities,
+            })
+
+    return {"document_id": document_id, "related": result}
+
+
+# ---------------------------------------------------------------------------
 # Upload
 # ---------------------------------------------------------------------------
 
-@router.post("/upload")
+@router.post("/upload", summary="Upload document", description="Upload a file (PDF, JPG, PNG, TIFF…). The document is queued for the full pipeline: conversion → storage → OCR → entity extraction → classification → entity resolution → field extraction. Returns the document ID immediately; poll `GET /api/documents/{id}` until `status == COMPLETED`.")
 async def upload_document(
     file: UploadFile = File(...),
     priority: int = Form(0),
@@ -679,7 +951,7 @@ async def upload_document(
 # Search
 # ---------------------------------------------------------------------------
 
-@router.get("/search")
+@router.get("/search", summary="Full-text search", description="Search across OCR text, classification labels, field values, and entity names.")
 async def search_documents(
     q: str = Query(..., min_length=1),
     page: int = Query(1, ge=1),

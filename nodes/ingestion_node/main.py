@@ -17,6 +17,7 @@ from src.ingestion_logic import (
     validate_extension,
 )
 from src.directory_watcher import DirectoryWatcher
+from src.email_watcher import EmailWatcher
 from dmsai_models import init_db
 
 
@@ -32,10 +33,14 @@ node = NodeBlueprint(
 app = node.app
 logger = node.logger
 
+_node_port = int(os.environ.get("INGESTION_NODE_PORT", 8010))
+
 watcher = DirectoryWatcher(
     config_path="config/local_config.yaml",
-    node_port=int(os.environ.get("INGESTION_NODE_PORT", 8010)),
+    node_port=_node_port,
 )
+
+email_watcher = EmailWatcher(node_port=_node_port)
 
 _original_lifespan = node.lifespan
 
@@ -43,13 +48,16 @@ _original_lifespan = node.lifespan
 @asynccontextmanager
 async def extended_lifespan(application):
     watcher_task = asyncio.create_task(watcher.run())
+    email_task = asyncio.create_task(email_watcher.run())
     async with _original_lifespan(application):
         yield
     watcher_task.cancel()
-    try:
-        await watcher_task
-    except asyncio.CancelledError:
-        pass
+    email_task.cancel()
+    for t in (watcher_task, email_task):
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
 
 app.router.lifespan_context = extended_lifespan
 

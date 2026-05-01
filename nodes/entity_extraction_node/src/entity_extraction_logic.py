@@ -67,11 +67,17 @@ def _parse_entities_json(raw: str) -> list[dict]:
 
     try:
         result = json.loads(raw)
+        if result is None:
+            return []
         if isinstance(result, list):
             return result
-        if isinstance(result, dict) and "entities" in result:
-            return result["entities"]
-        return [result]
+        if isinstance(result, dict):
+            if "entities" in result:
+                return result["entities"]
+            if not result:
+                return []
+            return [result]
+        return []
     except json.JSONDecodeError:
         start = raw.find("[")
         end = raw.rfind("]")

@@ -47,6 +47,10 @@ def _migrate_sqlite_schema(engine) -> None:
     _sqlite_add_column_if_missing(engine, "canonicalfield", "scope", "VARCHAR DEFAULT 'document'")
     _sqlite_add_column_if_missing(engine, "canonicaldocumentclass", "parent_id", "TEXT")
     _sqlite_add_column_if_missing(engine, "entity", "canonical_name", "TEXT")
+    # Archive / trash / compression lifecycle
+    _sqlite_add_column_if_missing(engine, "document", "archived_at", "TIMESTAMP")
+    _sqlite_add_column_if_missing(engine, "document", "trashed_at", "TIMESTAMP")
+    _sqlite_add_column_if_missing(engine, "document", "compressed_at", "TIMESTAMP")
     _sqlite_add_column_if_missing(engine, "entityfield", "confidence_details", "TEXT")
     _sqlite_add_column_if_missing(engine, "documententity", "confidence_details", "TEXT")
     _sqlite_add_column_if_missing(engine, "documentfield", "confidence_details", "TEXT")
@@ -209,20 +213,28 @@ Return ONLY a JSON array of entities. No explanation, no markdown fences.
 
 Document text:
 {ocr_text}"""
-    entity_resolution_prompt = """Determine if these two records refer to the same real-world entity.
-Consider name variations, abbreviations, legal suffixes, and shared identifiers.
+    entity_resolution_prompt = """You are an entity resolution expert. Carefully examine the two entity records below and determine whether they refer to the same real-world entity.
 
-Entity A:
+Be conservative — only conclude they are the same entity if the evidence is compelling. Different branches, subsidiaries, or similarly-named organisations are NOT the same entity.
+
+Entity A (incoming from the current document):
 - Name: {name_a}
 - Type: {type_a}
-- Fields: {fields_a}
+- Known fields: {fields_a}
 
-Entity B:
+Entity B (existing record in the knowledge base):
 - Name: {name_b}
 - Type: {type_b}
-- Fields: {fields_b}
+- Known fields: {fields_b}
 
-Respond with ONLY a valid JSON object: {{"same": true/false, "confidence": 0.0-1.0, "canonical_name": "<best canonical name for this entity>"}}"""
+Before answering, consider:
+1. Could the name difference be explained by abbreviations, legal suffixes, or transliterations?
+2. Do any unique identifiers (tax ID, SIRET, registration number, email) match or explicitly conflict?
+3. Is there any strong evidence they are DIFFERENT entities (different country, conflicting IDs, different industry)?
+4. How confident are you overall?
+
+Respond with ONLY a valid JSON object — no markdown, no explanation outside the JSON:
+{{"same": true/false, "confidence": 0.0-1.0, "reasoning": "<one sentence>", "canonical_name": "<best canonical name if same, else empty string>"}}"""
     field_detection_prompt = """Analyze the following document text and list ALL data fields/data points present.
 Do NOT include entity-level fields (names, addresses of people/companies) -- those are already extracted.
 Focus on document-level fields like: invoice_number, date, due_date, total_amount, subtotal, tax_amount,
@@ -278,15 +290,15 @@ Respond with ONLY a valid JSON object:
         ("classification_prompt", classification_prompt, "prompts", "Prompt template for document category/subcategory classification"),
         ("classification_canonical_map_prompt", classification_canonical_map_prompt, "prompts", "Prompt template for canonical classification label mapping"),
         ("entity_extraction_prompt", entity_extraction_prompt, "prompts", "Prompt template for entity extraction"),
-        ("entity_resolution_prompt", entity_resolution_prompt, "prompts", "Prompt template for entity disambiguation"),
+        ("entity_resolution_prompt", entity_resolution_prompt, "prompts", "Prompt template for LLM entity resolution (open question asking whether two entities are the same)"),
         ("field_detection_prompt", field_detection_prompt, "prompts", "Prompt template for document field detection"),
         ("field_extraction_prompt", field_extraction_prompt, "prompts", "Prompt template for document field value extraction"),
         ("field_canonical_map_prompt", field_canonical_map_prompt, "prompts", "Prompt template for canonical field mapping"),
         ("ocr_vision_model", "", "ocr", "Vision model override for OCR (empty = use default LLM model)"),
         ("ocr_vision_prompt", "Extract ALL text from this document image exactly as it appears. Preserve the layout, line breaks, and formatting as closely as possible. Return only the extracted text, nothing else.", "ocr", "Prompt sent to vision LLM for OCR"),
-        ("entity_name_match_high", "0.85", "entity_resolution", "Name similarity threshold for auto-match"),
-        ("entity_name_match_low", "0.6", "entity_resolution", "Name similarity lower bound for LLM disambiguation"),
-        ("entity_llm_confirm_min", "0.7", "entity_resolution", "Minimum LLM confidence to confirm entity match"),
+        ("entity_llm_merge_threshold", "0.75", "entity_resolution", "Minimum LLM confidence to merge two entity records (0.0-1.0, higher = stricter)"),
+        ("entity_resolution_top_k", "5", "entity_resolution", "Number of top token-overlap candidates passed to the LLM per incoming entity"),
+        ("entity_resolution_min_overlap", "0.1", "entity_resolution", "Minimum Jaccard token overlap to consider a candidate worth asking the LLM about"),
         ("confidence_level_high", "0.85", "confidence", "Minimum score for high confidence"),
         ("confidence_level_medium", "0.6", "confidence", "Minimum score for medium confidence"),
         ("confidence_default_source_quality", "0.75", "confidence", "Default OCR source quality when no OCR confidence is available"),
@@ -297,6 +309,10 @@ Respond with ONLY a valid JSON object:
         ("classification_new_category_min_confidence", "0.75", "classification", "Minimum confidence required before creating a new canonical document category"),
         ("low_confidence_threshold", "0.5", "buckets", "Pipeline confidence below which docs go to low-confidence bucket"),
         ("low_confidence_bucket_enabled", "false", "buckets", "Enable automatic low-confidence bucket assignment"),
+        # Archive / trash retention
+        ("archive_retention_days", "90", "archive", "Days after which archived documents are auto-compressed (0 = disabled)"),
+        ("trash_retention_days", "30", "archive", "Days after which trashed documents are permanently deleted (0 = disabled, requires admin confirmation)"),
+        ("archive_compression_enabled", "true", "archive", "Compress archived PDFs when retention period expires"),
         # SMTP / email verification
         ("smtp_host", "", "email", "SMTP server hostname"),
         ("smtp_port", "587", "email", "SMTP server port"),
@@ -327,6 +343,21 @@ Respond with ONLY a valid JSON object:
         ("ldap_group_attribute", "memberOf", "ldap", "LDAP attribute checked for group membership"),
         ("ldap_default_organization", "LDAP Users", "ldap", "Organization name for auto-provisioned LDAP users"),
         ("ldap_default_role", "user", "ldap", "Default role for auto-provisioned LDAP users (user/manager/admin)"),
+        # Ingestion — directory watcher
+        ("ingestion_watch_enabled", "true", "ingestion", "Enable polling the watch directory for new files"),
+        ("ingestion_watch_directory", "./data/inbox", "ingestion", "Directory to poll for new documents"),
+        ("ingestion_processed_directory", "./data/processed", "ingestion", "Directory where successfully ingested files are moved"),
+        ("ingestion_poll_interval_seconds", "5", "ingestion", "Seconds between directory scans"),
+        # Ingestion — email (IMAP)
+        ("ingestion_email_enabled", "false", "ingestion", "Enable polling an IMAP mailbox for document attachments"),
+        ("ingestion_email_imap_host", "", "ingestion", "IMAP server hostname"),
+        ("ingestion_email_imap_port", "993", "ingestion", "IMAP server port (993 = IMAPS, 143 = plain/STARTTLS)"),
+        ("ingestion_email_imap_user", "", "ingestion", "IMAP login username"),
+        ("ingestion_email_imap_password", "", "ingestion", "IMAP login password"),
+        ("ingestion_email_imap_tls", "true", "ingestion", "Use SSL/TLS for IMAP connection (set false for STARTTLS)"),
+        ("ingestion_email_folder", "INBOX", "ingestion", "Mailbox folder to monitor for new messages"),
+        ("ingestion_email_poll_interval_seconds", "60", "ingestion", "Seconds between mailbox polls"),
+        ("ingestion_email_mark_seen", "true", "ingestion", "Mark processed emails as seen (\\Seen flag)"),
     ]
     with Session(engine) as session:
         for key, value, category, description in defaults:
