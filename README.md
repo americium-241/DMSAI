@@ -179,31 +179,6 @@ Each bucket has its own **workflow states** (e.g. *to review*, *approved*, *reje
 
 ---
 
-### Document Lifecycle: Notes, Archive & History
-
-<table><tr>
-<td valign="top" width="55%">
-
-Every document has a complete lifecycle with audit trail:
-
-| Feature | Location |
-|---|---|
-| **Threaded notes** | Notes tab — reply, edit, delete, Markdown |
-| **Archive / Trash** | Archive hides from list; Trash before permanent deletion |
-| **Storage compaction** | Compress archived PDFs after a retention window |
-| **Audit log** | **History** tab — every field edit, classification change, lifecycle event, comment |
-| **Version snapshots** | Auto-saved on archive/trash; browse full past state |
-
-</td>
-<td valign="top" align="center">
-
-![History and audit log](docs/images/document-history.png)
-
-</td>
-</tr></table>
-
----
-
 ### Configurable LLM Prompts & Auto Ingestion
 
 <table><tr>
@@ -229,25 +204,6 @@ Both are configured live from **Admin → General Settings → Ingestion**.
 <td valign="top" align="center">
 
 ![LLM settings](docs/images/llm-settings.png)
-
-</td>
-</tr></table>
-
----
-
-### Pipeline Monitoring
-
-<table><tr>
-<td valign="top" width="55%">
-
-The **Pipeline** page shows the real-time health of every processing node: status, queue depth, and last heartbeat. Any node can be restarted individually from the UI.
-
-Optional **Grafana + Loki** monitoring stack is available as a Docker Compose profile — structured logs from all nodes, queryable in Grafana.
-
-</td>
-<td valign="top" align="center">
-
-![Pipeline status](docs/images/pipeline.png)
 
 </td>
 </tr></table>
@@ -295,16 +251,17 @@ See the full reference: [docs/api.md](docs/api.md)
 - **Document history** — full audit log of every field change, classification event, and lifecycle transition (History tab)
 - **Version snapshots** — auto-saved on archive/trash; browse and compare full past document states
 - **Archive & Trash** — soft-delete workflow before permanent deletion; storage compaction for archived PDFs
+- **Pipeline monitoring** — real-time health of every processing node (status, queue depth, last heartbeat); restart any node individually from the UI
 - **Entity merging** — manually resolve near-duplicate entities with the **Resolve** button on the Entities tab
 - **Entity custom fields** — attach key/value metadata to any canonical entity, editable per-document
 - **Bucket workflow states** — `open → to review → approved → rejected` with document locking per bucket
 - **Per-user bucket permissions** — control which users can view or act on a given bucket
-- **Document relations** — cross-document entity graph: see all documents that share entities with the current one
 - **Dashboard** — processing statistics, pipeline status overview, and recent activity feed
 - **Account lockout** — configurable failed-login limit and lockout duration (Admin → General Settings)
 - **Email verification** — optional confirmation flow on self-registration
 - **Multi-tenant organizations** — only admins can create organizations and manage user roles
 - **Quality metrics** — per-stage accuracy tracking in Admin → Quality Metrics
+- **Grafana + Loki monitoring** — structured logs from all nodes, queryable in Grafana (`docker compose --profile monitoring up -d`)
 - **CLI management** — `python dmsai.py start | stop | restart | status | logs | clean-db`
 
 ---
