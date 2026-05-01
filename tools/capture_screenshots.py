@@ -43,10 +43,13 @@ def _shot(page, name: str, url: str, tab: Optional[str] = None, wait_ms: int = 1
         for sel in [f"button:has-text('{tab}')", f"[role=tab]:has-text('{tab}')"]:
             try:
                 page.click(sel, timeout=2000)
-                time.sleep(0.8)
+                time.sleep(1.0)
                 break
             except Exception:
                 continue
+    # Always scroll to top so the viewport is consistent across all screenshots
+    page.evaluate("window.scrollTo(0, 0)")
+    time.sleep(0.3)
     page.screenshot(path=str(OUT / f"{name}.png"), full_page=False)
 
 
@@ -106,20 +109,21 @@ def main() -> None:
         _shot(page, "upload",           f"{APP}/upload")
         _shot(page, "buckets",          f"{APP}/buckets")
 
-        # Document detail tabs (correct tab names as rendered in the UI)
+        # Document detail tabs
         if doc_id:
             base = f"{APP}/documents/{doc_id}"
-            _shot(page, "document-confidence",  base)                           # default tab
-            _shot(page, "document-extraction",  base, tab="Extraction")         # fields + entities
+            _shot(page, "document-confidence",  base)                        # default tab
+            _shot(page, "document-entities",    base, tab="Entities")        # entity extraction tab
+            _shot(page, "document-fields",      base, tab="Fields")          # field extraction tab
+            _shot(page, "document-extraction",  base, tab="Fields")          # alias kept for README compat
             _shot(page, "document-ocr",         base, tab="OCR Text")
             _shot(page, "document-relations",   base, tab="Relations")
-            _shot(page, "document-history",     base, tab="History")
+            _shot(page, "document-history",     base, tab="History", wait_ms=2000)
 
         # Admin pages
         _shot(page, "pipeline",          f"{APP}/admin/pipeline",   wait_ms=1000)
         _shot(page, "llm-settings",      f"{APP}/admin/llm-settings")
         _shot(page, "general-settings",  f"{APP}/admin/settings")
-        _shot(page, "admin-entities",    f"{APP}/admin/entities")
 
         # Swagger UI
         _shot(page, "swagger", f"{API}/docs", wait_ms=2000)

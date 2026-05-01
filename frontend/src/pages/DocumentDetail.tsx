@@ -43,7 +43,7 @@ function ConfBar({ label, value, method }: { label: string; value: number | unde
   );
 }
 
-type Tab = 'confidence' | 'original' | 'extraction' | 'ocr' | 'info' | 'relations' | 'notes' | 'history';
+type Tab = 'confidence' | 'original' | 'entities' | 'fields' | 'ocr' | 'info' | 'relations' | 'notes' | 'history';
 
 type ConfidenceDetails = {
   score?: number | null;
@@ -662,7 +662,8 @@ export default function DocumentDetailPage() {
         {([
           { key: 'confidence' as Tab, label: 'Confidence', icon: <ShieldCheck size={14} /> },
           { key: 'original' as Tab, label: 'Original Doc', icon: <Eye size={14} /> },
-          { key: 'extraction' as Tab, label: `Extraction (${fields.length + entityDetails.length})`, icon: <Layers size={14} /> },
+          { key: 'entities' as Tab, label: `Entities (${entityDetails.length})`, icon: <GitMerge size={14} /> },
+          { key: 'fields' as Tab, label: `Fields (${fields.length})`, icon: <Layers size={14} /> },
           { key: 'ocr' as Tab, label: 'OCR Text', icon: <FileText size={14} /> },
           { key: 'notes' as Tab, label: `Notes (${comments.length})`, icon: <MessageSquare size={14} /> },
           { key: 'history' as Tab, label: 'History', icon: <Clock size={14} /> },
@@ -813,101 +814,98 @@ export default function DocumentDetailPage() {
         </div>
       )}
 
-      {tab === 'extraction' && (
-        <div className="space-y-6">
-          {/* Document Fields */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-white uppercase tracking-wider">Document Fields</h3>
-              <button onClick={() => setShowAdd(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 text-gray-300 text-sm hover:bg-gray-700 transition-colors">
-                <Plus size={14} /> Add Field
-              </button>
-            </div>
-            <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-800 text-gray-500 text-xs uppercase tracking-wider">
-                    <th className="text-left px-4 py-3">Field</th>
-                    <th className="text-left px-4 py-3">Value</th>
-                    <th className="text-left px-4 py-3">Confidence</th>
-                    <th className="text-left px-4 py-3">Method</th>
-                    <th className="text-left px-4 py-3">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {fields.map(f => (
-                    <tr key={f.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                      <td className="px-4 py-3 font-medium text-gray-300">{f.field_name}</td>
-                      <td className="px-4 py-3 text-gray-400 max-w-sm truncate">{f.field_value || '---'}</td>
-                      <td className="px-4 py-3 text-gray-500">{(f.confidence * 100).toFixed(0)}%</td>
-                      <td className="px-4 py-3"><Badge value={f.extraction_method} /></td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-1">
-                          <button onClick={() => { setEditField(f); setEditName(f.field_name); setEditValue(f.field_value || ''); }} className="p-1 rounded hover:bg-gray-700 text-gray-500 hover:text-white"><Pencil size={13} /></button>
-                          <button onClick={() => deleteField(f.id)} className="p-1 rounded hover:bg-gray-700 text-gray-500 hover:text-red-400"><Trash2 size={13} /></button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                  {fields.length === 0 && (
-                    <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-600">No fields extracted</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Entities */}
-          <div>
-            <h3 className="text-sm font-semibold text-white uppercase tracking-wider mb-3">Entities</h3>
-            {entityDetails.length === 0 ? (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center text-gray-600">No entities found</div>
-            ) : entityDetails.map(e => (
-              <div key={e.entity_id} className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-3">
-                <div className="flex items-center gap-3 mb-3">
-                  <span className="text-white font-medium">{e.name}</span>
-                  <Badge value={e.entity_type} />
-                  <Badge value={e.role} />
-                  <span className="text-xs text-gray-500">{(e.confidence * 100).toFixed(0)}%</span>
-                  <button onClick={() => { setResolveEntity(e); setEntitySearch(''); setEntityCandidates([]); setEntityTargetId(null); }} className="ml-auto flex items-center gap-1 text-xs text-amber-400 hover:text-amber-300">
-                    <GitMerge size={12} /> Resolve
-                  </button>
-                  <button onClick={() => setShowAddEntityField(e.entity_id)} className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300">
-                    <Plus size={12} /> Add Field
-                  </button>
-                </div>
-                <div className="bg-gray-800/30 rounded-lg overflow-hidden">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-gray-500 text-xs uppercase tracking-wider">
-                        <th className="text-left px-3 py-2">Field</th>
-                        <th className="text-left px-3 py-2">Value</th>
-                        <th className="text-left px-3 py-2">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {e.fields.map(f => (
-                        <tr key={f.id} className="border-t border-gray-800/30 hover:bg-gray-800/20">
-                          <td className="px-3 py-2 text-gray-400 text-xs font-mono">{f.field_name}</td>
-                          <td className="px-3 py-2 text-gray-300">{f.field_value}</td>
-                          <td className="px-3 py-2">
-                            <div className="flex items-center gap-1">
-                              <button onClick={() => { setEditEntityField({ entityId: e.entity_id, field: f }); setEditEntityFieldName(f.field_name); setEditEntityFieldValue(f.field_value); }}
-                                className="p-1 rounded hover:bg-gray-700 text-gray-500 hover:text-white"><Pencil size={12} /></button>
-                              <button onClick={() => deleteEntityField(e.entity_id, f.id)}
-                                className="p-1 rounded hover:bg-gray-700 text-gray-500 hover:text-red-400"><Trash2 size={12} /></button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                      {e.fields.length === 0 && (
-                        <tr><td colSpan={3} className="px-3 py-4 text-center text-gray-600 text-xs">No fields</td></tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+      {tab === 'entities' && (
+        <div className="space-y-3">
+          {entityDetails.length === 0 ? (
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center text-gray-600">No entities found</div>
+          ) : entityDetails.map(e => (
+            <div key={e.entity_id} className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+              <div className="flex items-center gap-3 mb-3">
+                <span className="text-white font-medium">{e.name}</span>
+                <Badge value={e.entity_type} />
+                <Badge value={e.role} />
+                <span className="text-xs text-gray-500">{(e.confidence * 100).toFixed(0)}%</span>
+                <button onClick={() => { setResolveEntity(e); setEntitySearch(''); setEntityCandidates([]); setEntityTargetId(null); }} className="ml-auto flex items-center gap-1 text-xs text-amber-400 hover:text-amber-300">
+                  <GitMerge size={12} /> Resolve
+                </button>
+                <button onClick={() => setShowAddEntityField(e.entity_id)} className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300">
+                  <Plus size={12} /> Add Field
+                </button>
               </div>
-            ))}
+              <div className="bg-gray-800/30 rounded-lg overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-gray-500 text-xs uppercase tracking-wider">
+                      <th className="text-left px-3 py-2">Field</th>
+                      <th className="text-left px-3 py-2">Value</th>
+                      <th className="text-left px-3 py-2">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {e.fields.map(f => (
+                      <tr key={f.id} className="border-t border-gray-800/30 hover:bg-gray-800/20">
+                        <td className="px-3 py-2 text-gray-400 text-xs font-mono">{f.field_name}</td>
+                        <td className="px-3 py-2 text-gray-300">{f.field_value}</td>
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-1">
+                            <button onClick={() => { setEditEntityField({ entityId: e.entity_id, field: f }); setEditEntityFieldName(f.field_name); setEditEntityFieldValue(f.field_value); }}
+                              className="p-1 rounded hover:bg-gray-700 text-gray-500 hover:text-white"><Pencil size={12} /></button>
+                            <button onClick={() => deleteEntityField(e.entity_id, f.id)}
+                              className="p-1 rounded hover:bg-gray-700 text-gray-500 hover:text-red-400"><Trash2 size={12} /></button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {e.fields.length === 0 && (
+                      <tr><td colSpan={3} className="px-3 py-4 text-center text-gray-600 text-xs">No fields</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tab === 'fields' && (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-white uppercase tracking-wider">Document Fields</h3>
+            <button onClick={() => setShowAdd(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 text-gray-300 text-sm hover:bg-gray-700 transition-colors">
+              <Plus size={14} /> Add Field
+            </button>
+          </div>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-800 text-gray-500 text-xs uppercase tracking-wider">
+                  <th className="text-left px-4 py-3">Field</th>
+                  <th className="text-left px-4 py-3">Value</th>
+                  <th className="text-left px-4 py-3">Confidence</th>
+                  <th className="text-left px-4 py-3">Method</th>
+                  <th className="text-left px-4 py-3">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {fields.map(f => (
+                  <tr key={f.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
+                    <td className="px-4 py-3 font-medium text-gray-300">{f.field_name}</td>
+                    <td className="px-4 py-3 text-gray-400 max-w-sm truncate">{f.field_value || '---'}</td>
+                    <td className="px-4 py-3 text-gray-500">{(f.confidence * 100).toFixed(0)}%</td>
+                    <td className="px-4 py-3"><Badge value={f.extraction_method} /></td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => { setEditField(f); setEditName(f.field_name); setEditValue(f.field_value || ''); }} className="p-1 rounded hover:bg-gray-700 text-gray-500 hover:text-white"><Pencil size={13} /></button>
+                        <button onClick={() => deleteField(f.id)} className="p-1 rounded hover:bg-gray-700 text-gray-500 hover:text-red-400"><Trash2 size={13} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {fields.length === 0 && (
+                  <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-600">No fields extracted</td></tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

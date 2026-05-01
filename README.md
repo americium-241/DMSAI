@@ -4,7 +4,7 @@ Drop a document in. Get back OCR text, a document type, every named entity, and 
 
 DMSAI is a **self-hosted**, **LLM-powered** document intelligence platform built on a chain of independent FastAPI microservices. The only external dependency is an LLM — run it locally with Ollama or point it at any cloud provider.
 
-[![Pipeline](https://img.shields.io/badge/pipeline-LLM--powered-blueviolet)](#processing-pipeline)
+[![Pipeline](https://img.shields.io/badge/pipeline-LLM--powered-blueviolet)](#feature-showcase)
 [![API](https://img.shields.io/badge/API-Swagger%20%2F%20OpenAPI-green)](http://localhost:8080/docs)
 [![Stack](https://img.shields.io/badge/stack-FastAPI%20%7C%20React%20%7C%20SQLite-blue)](#architecture)
 
@@ -48,7 +48,7 @@ A **vision LLM** reads every page — not just selectable text, but also scanned
 After OCR, the **Field Extraction** node asks the LLM to fill in every field in your canonical field catalogue, using the raw OCR text as evidence.
 
 - Fields are mapped to **canonical names** (e.g. `invoice_total`) — consistent across all document layouts
-- Every field carries a confidence score and the source snippet from OCR text
+- Every field carries a confidence score and extraction method
 - Editable from the **Fields** tab on the document detail page
 - Create, update, or delete fields manually at any time
 
@@ -57,7 +57,7 @@ After OCR, the **Field Extraction** node asks the LLM to fill in every field in 
 </td>
 <td valign="top" align="center">
 
-![Document fields tab](docs/images/document-extraction.png)
+![Document fields tab](docs/images/document-fields.png)
 
 </td>
 </tr></table>
@@ -71,17 +71,17 @@ After OCR, the **Field Extraction** node asks the LLM to fill in every field in 
 
 Named entities (people, companies, addresses, tax IDs…) are extracted and automatically **canonicalized** — the same entity mentioned differently across documents is linked to a single canonical record.
 
-- The **Entities** tab lists every entity with type, role, and confidence
-- Each entity links to an admin **entity profile** showing all linked documents, its own fields, and notes
-- Cross-document merging: the **Entity Resolution** node uses an **LLM-first** approach to detect near-duplicates (see below)
-- Entities are browsable and manually mergeable from **Admin → Entities**
+- The **Entities** tab lists every entity with type, role, confidence, and all its extracted fields
+- Each entity can be manually resolved (merged) with the **Resolve** button
+- Custom key/value fields can be added to any entity with **Add Field**
+- Cross-document merging: the **Entity Resolution** node uses an **LLM-first** approach to detect near-duplicates
 
 *Pipeline stages: Entity Extraction → Entity Resolution* → `GET /api/documents/{id}/entities`
 
 </td>
 <td valign="top" align="center">
 
-![Confidence breakdown showing entity stages](docs/images/document-confidence.png)
+![Entity extraction tab](docs/images/document-entities.png)
 
 </td>
 </tr></table>
@@ -204,53 +204,7 @@ Every document has a complete lifecycle with audit trail:
 
 ---
 
-### Auto Ingestion
-
-<table><tr>
-<td valign="top" width="55%">
-
-Documents enter the pipeline automatically — no UI required:
-
-| Source | How |
-|---|---|
-| **Directory watch** | Polls `./data/inbox/` for new files |
-| **Email / IMAP** | Polls a mailbox for PDF/image attachments |
-
-Both are configured live from **Admin → General Settings → Ingestion** — no config file edits or restarts.
-
-</td>
-<td valign="top" align="center">
-
-![General settings](docs/images/general-settings.png)
-
-</td>
-</tr></table>
-
----
-
-### Admin Entity Catalogue
-
-<table><tr>
-<td valign="top" width="55%">
-
-**Admin → Entities** gives a full catalogue of every canonical entity across all documents:
-
-- Filter by type, name, or free text
-- Click an entity to see its profile: all documents it appears in, all its fields, confidence breakdown, and notes
-- Manually merge near-duplicates
-- Manage entity types and canonical fields from the same panel
-
-</td>
-<td valign="top" align="center">
-
-![Admin entities](docs/images/admin-entities.png)
-
-</td>
-</tr></table>
-
----
-
-### Configurable LLM Prompts & Settings
+### Configurable LLM Prompts & Auto Ingestion
 
 <table><tr>
 <td valign="top" width="55%">
@@ -258,9 +212,18 @@ Both are configured live from **Admin → General Settings → Ingestion** — n
 Every LLM prompt, threshold, and provider setting is editable from **Admin → LLM Settings** — no restarts, no config files.
 
 - Switch between Ollama (local) and LiteLLM/Gemini (cloud) live
-- Edit the OCR, classification, entity extraction, entity resolution, and field extraction prompts
+- Edit OCR, classification, entity extraction, entity resolution, and field extraction prompts
 - Adjust confidence thresholds per stage
 - Restart individual pipeline nodes after changes
+
+Documents also enter the pipeline **automatically — no UI required**:
+
+| Source | How |
+|---|---|
+| **Directory watch** | Polls `./data/inbox/` for new files |
+| **Email / IMAP** | Polls a mailbox for PDF/image attachments |
+
+Both are configured live from **Admin → General Settings → Ingestion**.
 
 </td>
 <td valign="top" align="center">
@@ -326,6 +289,26 @@ See the full reference: [docs/api.md](docs/api.md)
 
 ---
 
+### Other Features
+
+- **Threaded notes** on every document — Markdown, reply, edit, delete
+- **Document history** — full audit log of every field change, classification event, and lifecycle transition (History tab)
+- **Version snapshots** — auto-saved on archive/trash; browse and compare full past document states
+- **Archive & Trash** — soft-delete workflow before permanent deletion; storage compaction for archived PDFs
+- **Entity merging** — manually resolve near-duplicate entities with the **Resolve** button on the Entities tab
+- **Entity custom fields** — attach key/value metadata to any canonical entity, editable per-document
+- **Bucket workflow states** — `open → to review → approved → rejected` with document locking per bucket
+- **Per-user bucket permissions** — control which users can view or act on a given bucket
+- **Document relations** — cross-document entity graph: see all documents that share entities with the current one
+- **Dashboard** — processing statistics, pipeline status overview, and recent activity feed
+- **Account lockout** — configurable failed-login limit and lockout duration (Admin → General Settings)
+- **Email verification** — optional confirmation flow on self-registration
+- **Multi-tenant organizations** — only admins can create organizations and manage user roles
+- **Quality metrics** — per-stage accuracy tracking in Admin → Quality Metrics
+- **CLI management** — `python dmsai.py start | stop | restart | status | logs | clean-db`
+
+---
+
 ## Quick Start
 
 Two paths, same result — the app at **http://localhost:5173**.
@@ -387,73 +370,6 @@ ollama pull gemma3:27b
 The `.env.example` defaults already point to `http://localhost:11434` — no edits needed.
 
 To use **Gemini / LiteLLM** instead: add `GEMINI_API_KEY=…` to `.env` and switch the provider in **Admin → LLM Settings**.
-
----
-
-## Processing Pipeline
-
-Every uploaded document flows through 8 sequential nodes. Each is an independent FastAPI service ([DecentraFlow](README_decentraflow.md)).
-
-```
-Upload
-  │
-  ▼
-[1] Ingestion  :8010   validate, queue, assign workflow ID
-  │
-  ▼
-[2] Conversion  :8011  convert image / PDF to a normalized PDF
-  │
-  ▼
-[3] Storage  :8012     persist file, write document record to DB
-  │
-  ▼
-[4] OCR  :8013         vision LLM -> raw text + OCR confidence
-  │
-  ▼
-[5] Entity Extraction  :8015   LLM -> named entities + canonical mapping
-  │
-  ▼
-[6] Classification  :8016      LLM -> canonical category + subcategory + confidence
-  │
-  ▼
-[7] Entity Resolution  :8017   LLM-first deduplication (identifier → token pre-filter → LLM open question)
-  │
-  ▼
-[8] Field Extraction  :8018    LLM -> structured fields grounded in OCR evidence
-  │
-  ▼
-COMPLETED -- auto-assign to matching buckets, compute pipeline confidence
-```
-
-**Status lifecycle:** `PENDING` → `OCR_COMPLETE` → `ENTITY_EXTRACTED` → `CLASSIFIED` → `RESOLVED` → `COMPLETED` (or `FAILED`)
-
-The **API gateway** (`:8080`) is the only public entry point. Node ports are internal.
-
-### Entity Resolution — LLM-first approach
-
-The entity resolution node uses a three-step cascade to avoid both false merges and unnecessary LLM calls:
-
-| Step | Mechanism | Action |
-|---|---|---|
-| **1. Hard identifier match** | Exact normalized match on `tax_id`, `siret`, `vat_number`, `email`, `registration_number` | Merge immediately — confidence = 1.0, no LLM needed |
-| **2. Token-overlap pre-filter** | Jaccard overlap of word tokens (legal suffixes stripped) | Keep the top-K candidates; skip LLM if best overlap < `entity_resolution_min_overlap` |
-| **3. LLM open question** | Each candidate gets a detailed open question: *"Are these the same entity? Consider all evidence."* | Merge if `same=true` **and** `confidence ≥ entity_llm_merge_threshold`; otherwise create a new entity |
-
-The LLM returns a structured JSON object:
-```json
-{"same": true, "confidence": 0.92, "reasoning": "Same company, minor abbreviation", "canonical_name": "ACME Corporation"}
-```
-
-The `reasoning` field is logged and can be inspected in the pipeline events. The prompt is fully editable from **Admin → LLM Settings** (`entity_resolution_prompt`).
-
-**Tunable `SystemConfig` keys** (editable in the admin UI without restart):
-
-| Key | Default | Description |
-|---|---|---|
-| `entity_llm_merge_threshold` | `0.75` | Minimum LLM confidence required to merge two entity records |
-| `entity_resolution_top_k` | `5` | Number of top token-overlap candidates sent to the LLM per incoming entity |
-| `entity_resolution_min_overlap` | `0.1` | Minimum Jaccard token overlap to consider a candidate worth asking the LLM about |
-| `entity_resolution_prompt` | *(multi-line)* | The full prompt template sent to the LLM (supports `{name_a}`, `{type_a}`, `{fields_a}`, `{name_b}`, `{type_b}`, `{fields_b}`) |
 
 ---
 
