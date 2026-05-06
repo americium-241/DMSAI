@@ -53,7 +53,7 @@ def _get_doc_or_404(session, document_id: str, user: User) -> Document:
     doc = session.get(Document, document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    if doc.organization_id and doc.organization_id != user.organization_id:
+    if doc.organization_id != user.organization_id:
         raise HTTPException(status_code=404, detail="Document not found")
     return doc
 

@@ -929,17 +929,18 @@ async def upload_document(
         resp = await client.post(
             f"{INGESTION_NODE_URL}/upload",
             files={"file": (file.filename, file_content, file.content_type)},
-            data={"priority": str(priority), "mode": mode},
+            data={"priority": str(priority), "mode": mode, "organization_id": user.organization_id},
         )
         if resp.status_code >= 400:
             raise HTTPException(status_code=resp.status_code, detail=resp.text)
         result = resp.json()
 
+    # Ensure organization_id is set on the Document record (belt-and-suspenders)
     doc_id = result.get("document_id")
     if doc_id:
         with get_session() as session:
             doc = session.get(Document, doc_id)
-            if doc:
+            if doc and not doc.organization_id:
                 doc.organization_id = user.organization_id
                 session.add(doc)
                 session.commit()
@@ -951,96 +952,144 @@ async def upload_document(
 # Search
 # ---------------------------------------------------------------------------
 
-@router.get("/search", summary="Full-text search", description="Search across OCR text, classification labels, field values, and entity names.")
+def _ocr_snippet(text: str, query: str, ctx: int = 120) -> str:
+    """Return a short snippet of OCR text centred around the first match."""
+    lo = text.lower()
+    idx = lo.find(query.lower())
+    if idx == -1:
+        return text[:ctx].rstrip() + "…"
+    start = max(0, idx - ctx // 2)
+    end = min(len(text), idx + len(query) + ctx // 2)
+    snippet = ("…" if start > 0 else "") + text[start:end].strip() + ("…" if end < len(text) else "")
+    return snippet
+
+
+def _doc_row(doc: Document, match_type: str, match_value: str, snippet: Optional[str] = None) -> dict:
+    return {
+        "document_id": doc.id,
+        "filename": doc.filename,
+        "match_type": match_type,
+        "match_value": match_value,
+        "snippet": snippet,
+        "classification_label": doc.classification_label,
+        "classification_subcategory_label": doc.classification_subcategory_label,
+        "status": doc.status,
+        "pipeline_confidence": doc.pipeline_confidence,
+        "created_at": str(doc.created_at) if doc.created_at else None,
+    }
+
+
+@router.get("/search", summary="Full-text search")
 async def search_documents(
     q: str = Query(..., min_length=1),
+    scope: str = Query("filename,content,fields,entities", description="Comma-separated search scopes"),
+    status: Optional[str] = None,
+    classification: Optional[str] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     user: User = Depends(get_current_user),
 ):
+    """Search documents across one or more scopes: filename, content (OCR), fields, entities."""
     init_db()
-    term = f"%{q}%"
-    results = []
-    seen_doc_ids = set()
+    scopes = {s.strip() for s in scope.split(",")}
+    results: list[dict] = []
+    seen_doc_ids: set[str] = set()
 
     with get_session() as session:
-        org_docs = select(Document.id).where(
-            Document.organization_id == user.organization_id
+        base = select(Document).where(
+            Document.organization_id == user.organization_id,
+            Document.archived_at.is_(None),
+            Document.trashed_at.is_(None),
         )
-        org_doc_ids = set(session.exec(org_docs).all())
-
-        for doc in session.exec(
-            select(Document).where(
-                Document.id.in_(org_doc_ids),
+        if status:
+            base = base.where(Document.status == status)
+        if classification:
+            base = base.where(
                 or_(
-                    Document.filename.contains(q),
-                    Document.classification_label.contains(q),
-                    Document.classification_subcategory_label.contains(q),
-                    Document.ocr_text.contains(q),
+                    Document.classification_label.contains(classification),
+                    Document.classification_subcategory_label.contains(classification),
                 )
-            ).limit(100)
-        ).all():
-            if doc.id not in seen_doc_ids:
-                seen_doc_ids.add(doc.id)
-                if q.lower() in (doc.filename or "").lower():
-                    match_field = "filename"
-                elif q.lower() in (doc.classification_label or "").lower():
-                    match_field = "classification_label"
-                elif q.lower() in (doc.classification_subcategory_label or "").lower():
-                    match_field = "classification_subcategory_label"
-                else:
-                    match_field = "ocr_text"
-                results.append({
-                    "document_id": doc.id, "filename": doc.filename,
-                    "match_type": match_field, "match_value": doc.filename,
-                    "classification_label": doc.classification_label,
-                    "classification_subcategory_label": doc.classification_subcategory_label,
-                    "status": doc.status,
-                })
+            )
+        org_doc_ids_query = base.with_only_columns(Document.id)
+        org_doc_ids = set(session.exec(org_doc_ids_query).all())
 
-        for df in session.exec(
-            select(DocumentField).where(
-                DocumentField.document_id.in_(org_doc_ids),
-                or_(DocumentField.field_name.contains(q), DocumentField.field_value.contains(q)),
-            ).limit(100)
-        ).all():
-            if df.document_id not in seen_doc_ids:
-                seen_doc_ids.add(df.document_id)
-                doc = session.get(Document, df.document_id)
-                results.append({
-                    "document_id": df.document_id,
-                    "filename": doc.filename if doc else None,
-                    "match_type": f"field:{df.field_name}",
-                    "match_value": df.field_value,
-                    "classification_label": doc.classification_label if doc else None,
-                    "classification_subcategory_label": doc.classification_subcategory_label if doc else None,
-                    "status": doc.status if doc else None,
-                })
+        if not org_doc_ids:
+            return {"total": 0, "page": page, "page_size": page_size, "results": []}
 
-        for entity in session.exec(
-            select(Entity).where(Entity.name.contains(q)).limit(50)
-        ).all():
-            links = session.exec(
-                select(DocumentEntity).where(
-                    DocumentEntity.entity_id == entity.id,
-                    DocumentEntity.document_id.in_(org_doc_ids),
-                )
-            ).all()
-            for lnk in links:
-                if lnk.document_id not in seen_doc_ids:
-                    seen_doc_ids.add(lnk.document_id)
-                    doc = session.get(Document, lnk.document_id)
-                    results.append({
-                        "document_id": lnk.document_id,
-                        "filename": doc.filename if doc else None,
-                        "match_type": f"entity:{entity.name}",
-                        "match_value": entity.name,
-                        "classification_label": doc.classification_label if doc else None,
-                        "classification_subcategory_label": doc.classification_subcategory_label if doc else None,
-                        "status": doc.status if doc else None,
-                    })
+        # — filename scope -------------------------------------------------------
+        if "filename" in scopes:
+            for doc in session.exec(
+                base.where(Document.filename.contains(q)).limit(200)
+            ).all():
+                if doc.id not in seen_doc_ids:
+                    seen_doc_ids.add(doc.id)
+                    results.append(_doc_row(doc, "filename", doc.filename or ""))
+
+        # — content (OCR text + classification label) scope ----------------------
+        if "content" in scopes:
+            for doc in session.exec(
+                base.where(
+                    or_(
+                        Document.ocr_text.contains(q),
+                        Document.classification_label.contains(q),
+                        Document.classification_subcategory_label.contains(q),
+                    )
+                ).limit(200)
+            ).all():
+                if doc.id not in seen_doc_ids:
+                    seen_doc_ids.add(doc.id)
+                    if q.lower() in (doc.ocr_text or "").lower():
+                        snippet = _ocr_snippet(doc.ocr_text or "", q)
+                        match_type = "content"
+                    else:
+                        snippet = None
+                        match_type = "classification"
+                    results.append(_doc_row(doc, match_type, q, snippet))
+
+        # — fields scope ---------------------------------------------------------
+        if "fields" in scopes:
+            for df in session.exec(
+                select(DocumentField).where(
+                    DocumentField.document_id.in_(org_doc_ids),
+                    or_(DocumentField.field_name.contains(q), DocumentField.field_value.contains(q)),
+                ).limit(200)
+            ).all():
+                if df.document_id not in seen_doc_ids:
+                    seen_doc_ids.add(df.document_id)
+                    doc = session.get(Document, df.document_id)
+                    if doc:
+                        results.append(_doc_row(
+                            doc,
+                            f"field:{df.field_name}",
+                            df.field_value or "",
+                            f"{df.field_name} = {df.field_value}",
+                        ))
+
+        # — entities scope -------------------------------------------------------
+        if "entities" in scopes:
+            for entity in session.exec(
+                select(Entity).where(
+                    or_(Entity.name.contains(q), Entity.canonical_name.contains(q))
+                ).limit(100)
+            ).all():
+                links = session.exec(
+                    select(DocumentEntity).where(
+                        DocumentEntity.entity_id == entity.id,
+                        DocumentEntity.document_id.in_(org_doc_ids),
+                    )
+                ).all()
+                for lnk in links:
+                    if lnk.document_id not in seen_doc_ids:
+                        seen_doc_ids.add(lnk.document_id)
+                        doc = session.get(Document, lnk.document_id)
+                        if doc:
+                            results.append(_doc_row(
+                                doc,
+                                f"entity:{entity.entity_type}",
+                                entity.name,
+                                f"{entity.entity_type}: {entity.name}",
+                            ))
 
     total = len(results)
     start = (page - 1) * page_size
-    paged = results[start:start + page_size]
-    return {"total": total, "page": page, "page_size": page_size, "results": paged}
+    return {"total": total, "page": page, "page_size": page_size, "results": results[start:start + page_size]}

@@ -59,6 +59,29 @@ class Organization(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class UserOrganization(SQLModel, table=True):
+    """Many-to-many join between User and Organization with a per-org role."""
+
+    id: str = Field(primary_key=True)
+    user_id: str = Field(foreign_key="user.id", index=True)
+    organization_id: str = Field(foreign_key="organization.id", index=True)
+    role: str = Field(default="user")        # admin | manager | user within this org
+    is_default: bool = Field(default=False)  # the org activated on fresh login
+    joined_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class OrgIngestionConfig(SQLModel, table=True):
+    """Per-organization ingestion source (directory watch or IMAP email inbox)."""
+
+    id: str = Field(primary_key=True)
+    organization_id: str = Field(foreign_key="organization.id", index=True)
+    name: str                               # human label, e.g. "Paris HQ – Inbox"
+    source_type: str                        # "directory" | "email"
+    config_json: str = Field(default="{}")  # JSON with path / IMAP settings
+    is_active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class User(SQLModel, table=True):
     """An authenticated user belonging to an organization."""
 
@@ -136,6 +159,7 @@ class Entity(SQLModel, table=True):
     entity_type: str
     name: str = Field(index=True)
     canonical_name: Optional[str] = Field(default=None, index=True)
+    organization_id: Optional[str] = Field(default=None, foreign_key="organization.id", index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: Optional[datetime] = Field(default=None)
 

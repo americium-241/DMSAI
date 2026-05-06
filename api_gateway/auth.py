@@ -181,7 +181,11 @@ async def get_current_user(
         if not user or not user.is_active:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
         session.expunge(user)
-        return user
+
+    # Override with JWT active org/role so org-switching is reflected without a DB round-trip
+    user.organization_id = payload.get("org", user.organization_id)
+    user.role = payload.get("role", user.role)
+    return user
 
 
 async def require_admin(user: User = Depends(get_current_user)) -> User:

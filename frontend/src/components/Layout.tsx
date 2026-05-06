@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Upload, Archive, Activity,
   Users, LogOut, ChevronDown, Building2, Sliders, Search,
-  LineChart, Brain, Inbox,
+  LineChart, Brain, Inbox, Check, Network,
 } from 'lucide-react';
 import { useAuth } from '../auth';
 import { useState } from 'react';
@@ -12,10 +12,12 @@ const USER_NAV = [
   { to: '/buckets', icon: Archive, label: 'Buckets' },
   { to: '/upload', icon: Upload, label: 'Upload' },
   { to: '/documents', icon: Search, label: 'Search' },
+  { to: '/entities', icon: Network, label: 'Entities' },
 ];
 
 const ADMIN_NAV = [
   { to: '/admin/users', icon: Users, label: 'Users' },
+  { to: '/admin/organizations', icon: Building2, label: 'Organizations' },
   { to: '/admin/buckets', icon: Archive, label: 'Bucket Management' },
   { to: '/admin/llm-settings', icon: Brain, label: 'LLM Settings' },
   { to: '/admin/general-settings', icon: Sliders, label: 'General Settings' },
@@ -25,10 +27,27 @@ const ADMIN_NAV = [
 ];
 
 export default function Layout() {
-  const { user, logout } = useAuth();
+  const { user, logout, switchOrg } = useAuth();
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const isAdmin = user?.role === 'admin' || user?.role === 'manager';
+  const orgs = user?.organizations ?? [];
+  const hasMultipleOrgs = orgs.length > 1;
+
+  const handleSwitchOrg = async (orgId: string) => {
+    if (orgId === user?.organization_id) { setMenuOpen(false); return; }
+    setSwitching(true);
+    try {
+      await switchOrg(orgId);
+      setMenuOpen(false);
+      navigate('/');
+    } catch (e) {
+      console.error('Failed to switch org', e);
+    } finally {
+      setSwitching(false);
+    }
+  };
 
   const handleLogout = () => {
     logout();
@@ -80,6 +99,7 @@ export default function Layout() {
         <div className="border-t border-gray-800 p-3 relative">
           <button
             onClick={() => setMenuOpen(!menuOpen)}
+            disabled={switching}
             className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg text-sm hover:bg-gray-800 transition-colors"
           >
             <div className="w-8 h-8 rounded-full bg-blue-600/30 flex items-center justify-center text-blue-400 text-xs font-bold">
@@ -95,7 +115,28 @@ export default function Layout() {
             <ChevronDown size={14} className="text-gray-500" />
           </button>
           {menuOpen && (
-            <div className="absolute bottom-full left-3 right-3 mb-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden">
+            <div className="absolute bottom-full left-3 right-3 mb-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden z-50">
+              {hasMultipleOrgs && (
+                <>
+                  <div className="px-4 py-2 text-[10px] uppercase tracking-wider text-gray-500 font-semibold border-b border-gray-700">
+                    Switch Organization
+                  </div>
+                  {orgs.map((org) => (
+                    <button
+                      key={org.organization_id}
+                      onClick={() => handleSwitchOrg(org.organization_id)}
+                      className="flex items-center gap-2 w-full px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors"
+                    >
+                      <Building2 size={13} className="text-gray-500 shrink-0" />
+                      <span className="flex-1 text-left truncate">{org.organization_name}</span>
+                      {org.organization_id === user?.organization_id && (
+                        <Check size={13} className="text-blue-400 shrink-0" />
+                      )}
+                    </button>
+                  ))}
+                  <div className="border-t border-gray-700" />
+                </>
+              )}
               <button
                 onClick={handleLogout}
                 className="flex items-center gap-2 w-full px-4 py-2.5 text-sm text-red-400 hover:bg-gray-700 transition-colors"

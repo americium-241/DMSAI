@@ -69,6 +69,7 @@ class Base64UploadRequest(BaseModel):
     filename: str
     priority: Optional[int] = 0
     mode: Optional[str] = "auto"
+    organization_id: Optional[str] = None
 
 
 @app.post("/upload/base64")
@@ -84,6 +85,7 @@ async def upload_base64(request: Base64UploadRequest):
 
     payload = build_ingestion_payload(
         raw_bytes, request.filename, source="api", mode=request.mode or "auto",
+        organization_id=request.organization_id,
     )
     payload["priority"] = request.priority or 0
 
@@ -105,6 +107,7 @@ async def upload_file(
     file: UploadFile = File(...),
     priority: int = Form(0),
     mode: str = Form("auto"),
+    organization_id: Optional[str] = Form(None),
 ):
     """Accept a multipart file upload and queue it for processing."""
     filename = file.filename or "unknown"
@@ -117,7 +120,9 @@ async def upload_file(
     if not raw_bytes:
         raise HTTPException(status_code=400, detail="Empty file")
 
-    payload = build_ingestion_payload(raw_bytes, filename, source="api", mode=mode)
+    payload = build_ingestion_payload(
+        raw_bytes, filename, source="api", mode=mode, organization_id=organization_id
+    )
     payload["priority"] = priority
 
     with Session(node.engine) as session:

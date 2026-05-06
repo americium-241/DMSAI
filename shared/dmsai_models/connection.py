@@ -60,6 +60,7 @@ def _migrate_sqlite_schema(engine) -> None:
     _sqlite_add_column_if_missing(engine, "user", "email_verification_sent_at", "TIMESTAMP")
     _sqlite_add_column_if_missing(engine, "user", "failed_login_attempts", "INTEGER DEFAULT 0")
     _sqlite_add_column_if_missing(engine, "user", "locked_until", "TIMESTAMP")
+    _sqlite_add_column_if_missing(engine, "entity", "organization_id", "TEXT")
 
 
 def _seed_entity_canonical_fields(engine) -> None:
@@ -447,6 +448,132 @@ def _load_auth_yaml(engine) -> None:
         session.commit()
 
 
+def _seed_user_organizations(engine) -> None:
+    """For every existing User, create a UserOrganization row (idempotent)."""
+    from sqlmodel import select
+
+    from .models import User, UserOrganization
+
+    with Session(engine) as session:
+        users = session.exec(select(User)).all()
+        for user in users:
+            exists = session.exec(
+                select(UserOrganization).where(
+                    UserOrganization.user_id == user.id,
+                    UserOrganization.organization_id == user.organization_id,
+                )
+            ).first()
+            if exists:
+                continue
+            session.add(
+                UserOrganization(
+                    id=str(uuid.uuid4()),
+                    user_id=user.id,
+                    organization_id=user.organization_id,
+                    role=user.role,
+                    is_default=True,
+                    joined_at=datetime.utcnow(),
+                )
+            )
+        session.commit()
+
+
+def _migrate_ingestion_to_org_configs(engine) -> None:
+    """Migrate legacy SystemConfig ingestion keys to OrgIngestionConfig rows (idempotent)."""
+    from sqlmodel import select
+
+    from .models import OrgIngestionConfig, Organization, SystemConfig
+
+    with Session(engine) as session:
+        default_org = session.exec(select(Organization)).first()
+        if not default_org:
+            return
+
+        watch_dir = session.exec(
+            select(SystemConfig).where(SystemConfig.key == "ingestion_watch_directory")
+        ).first()
+        if watch_dir and watch_dir.value:
+            already = session.exec(
+                select(OrgIngestionConfig).where(
+                    OrgIngestionConfig.organization_id == default_org.id,
+                    OrgIngestionConfig.source_type == "directory",
+                )
+            ).first()
+            if not already:
+                session.add(
+                    OrgIngestionConfig(
+                        id=str(uuid.uuid4()),
+                        organization_id=default_org.id,
+                        name="Default watch directory",
+                        source_type="directory",
+                        config_json=json.dumps({"watch_directory": watch_dir.value}),
+                        is_active=True,
+                        created_at=datetime.utcnow(),
+                    )
+                )
+
+        imap_host = session.exec(
+            select(SystemConfig).where(SystemConfig.key == "ingestion_email_imap_host")
+        ).first()
+        if imap_host and imap_host.value:
+            already = session.exec(
+                select(OrgIngestionConfig).where(
+                    OrgIngestionConfig.organization_id == default_org.id,
+                    OrgIngestionConfig.source_type == "email",
+                )
+            ).first()
+            if not already:
+                imap_keys = [
+                    "ingestion_email_imap_host",
+                    "ingestion_email_imap_port",
+                    "ingestion_email_imap_user",
+                    "ingestion_email_imap_password",
+                    "ingestion_email_imap_folder",
+                    "ingestion_email_imap_ssl",
+                    "ingestion_email_imap_delete_after",
+                    "ingestion_email_poll_interval_seconds",
+                ]
+                cfg: dict = {}
+                for k in imap_keys:
+                    row = session.exec(select(SystemConfig).where(SystemConfig.key == k)).first()
+                    if row and row.value:
+                        cfg[k.replace("ingestion_email_", "")] = row.value
+                session.add(
+                    OrgIngestionConfig(
+                        id=str(uuid.uuid4()),
+                        organization_id=default_org.id,
+                        name="Default email inbox",
+                        source_type="email",
+                        config_json=json.dumps(cfg),
+                        is_active=True,
+                        created_at=datetime.utcnow(),
+                    )
+                )
+        session.commit()
+
+
+def _migrate_document_org_ids(engine) -> None:
+    """Stamp any Document rows that have organization_id=NULL with the default org (idempotent)."""
+    from sqlmodel import select
+
+    from .models import Document, Organization
+
+    with Session(engine) as session:
+        default_org = session.exec(select(Organization)).first()
+        if not default_org:
+            return
+        unowned = session.exec(
+            select(Document).where(Document.organization_id.is_(None))
+        ).all()
+        for doc in unowned:
+            doc.organization_id = default_org.id
+        if unowned:
+            session.commit()
+            logging.getLogger("dmsai_models").info(
+                "Migrated %d document(s) to org %s", len(unowned), default_org.id
+            )
+
+
 def init_db():
     """Create all DMSAI tables if they don't exist."""
     from . import models  # noqa: F401 — registers tables with SQLModel metadata
@@ -474,6 +601,18 @@ def init_db():
         _load_auth_yaml(engine)
     except Exception as e:
         logging.getLogger("dmsai_models").warning("load auth.yaml failed: %s", e)
+    try:
+        _seed_user_organizations(engine)
+    except Exception as e:
+        logging.getLogger("dmsai_models").warning("seed user organizations failed: %s", e)
+    try:
+        _migrate_ingestion_to_org_configs(engine)
+    except Exception as e:
+        logging.getLogger("dmsai_models").warning("migrate ingestion to org configs failed: %s", e)
+    try:
+        _migrate_document_org_ids(engine)
+    except Exception as e:
+        logging.getLogger("dmsai_models").warning("migrate document org ids failed: %s", e)
 
 
 def get_session() -> Session:

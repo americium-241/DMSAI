@@ -7,6 +7,7 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<{ verification_required?: boolean; message?: string }>;
   register: (email: string, password: string, fullName: string, orgName?: string) => Promise<{ verification_required?: boolean; message?: string }>;
   logout: () => void;
+  switchOrg: (orgId: string) => Promise<void>;
   loading: boolean;
 }
 
@@ -65,8 +66,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   };
 
+  const switchOrg = async (orgId: string) => {
+    const resp = await api.switchOrg(orgId);
+    if (resp.access_token) {
+      localStorage.setItem('dmsai_token', resp.access_token);
+      localStorage.setItem('dmsai_user', JSON.stringify(resp.user));
+      setToken(resp.access_token);
+      setUser(resp.user);
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, token, login, register, logout, loading }}>
+    <AuthContext.Provider value={{ user, token, login, register, logout, switchOrg, loading }}>
       {children}
     </AuthContext.Provider>
   );

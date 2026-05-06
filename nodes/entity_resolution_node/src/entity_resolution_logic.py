@@ -323,14 +323,26 @@ async def process_entity_resolution(payload: dict) -> dict:
     init_db()
     resolved: list[dict] = []
     link_confidences: list[float] = []
+    org_id: str | None = payload.get("organization_id")
 
     with get_session() as session:
-        # Load candidates filtered by the entity types we actually need
+        # Load candidates filtered by the entity types we actually need and org scope
         entity_types_needed = {e.get("entity_type", "other") for e in extracted_entities}
+
+        def _scoped(q):
+            """Apply org_id filter when available (entities with NULL org_id are legacy — still visible)."""
+            if org_id:
+                return q.where(
+                    (Entity.organization_id == org_id) | (Entity.organization_id.is_(None))
+                )
+            return q
+
         candidates = session.exec(
-            select(Entity).where(Entity.entity_type.in_(entity_types_needed))
+            _scoped(select(Entity).where(Entity.entity_type.in_(entity_types_needed)))
         ).all()
-        untyped = session.exec(select(Entity).where(Entity.entity_type == "other")).all()
+        untyped = session.exec(
+            _scoped(select(Entity).where(Entity.entity_type == "other"))
+        ).all()
         all_candidates = list({e.id: e for e in list(candidates) + list(untyped)}.values())
 
         # Pre-load all entity fields to avoid N+1 queries
@@ -397,6 +409,7 @@ async def process_entity_resolution(payload: dict) -> dict:
                     entity_type=etype,
                     name=incoming_name,
                     canonical_name=incoming_name,
+                    organization_id=org_id,
                     created_at=datetime.utcnow(),
                 )
                 session.add(new_entity)

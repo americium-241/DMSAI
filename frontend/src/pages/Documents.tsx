@@ -1,451 +1,389 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, X, ChevronRight, ChevronLeft } from 'lucide-react';
-import { api, type DocumentSummary, type SearchResult, type EntityItem } from '../api';
+import { Search, X, ChevronLeft, ChevronRight, SlidersHorizontal, FileText, Hash, Users, AlignLeft } from 'lucide-react';
+import { api, type DocumentSummary, type SearchResult, type SearchScope } from '../api';
 import Badge from '../components/Badge';
 
-type SearchMode = 'filters' | 'content' | 'entities';
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+type LifecycleFilter = '' | 'archived' | 'trashed';
+
+const SCOPE_LABELS: Record<SearchScope, { label: string; icon: React.ReactNode }> = {
+  filename: { label: 'Filename', icon: <FileText size={12} /> },
+  content:  { label: 'Content',  icon: <AlignLeft size={12} /> },
+  fields:   { label: 'Fields',   icon: <Hash size={12} /> },
+  entities: { label: 'Entities', icon: <Users size={12} /> },
+};
+
+const ALL_SCOPES: SearchScope[] = ['filename', 'content', 'fields', 'entities'];
 
 function ConfidenceBadge({ value }: { value: number | null | undefined }) {
-  if (value == null) return <span className="text-gray-600">---</span>;
+  if (value == null) return <span className="text-gray-600">—</span>;
   const pct = (value * 100).toFixed(0);
   const color = value >= 0.7 ? 'text-green-400' : value >= 0.5 ? 'text-yellow-400' : 'text-red-400';
-  return <span className={`font-medium ${color}`}>{pct}%</span>;
+  return <span className={`font-medium tabular-nums ${color}`}>{pct}%</span>;
 }
 
-export default function DocumentsPage() {
-  const [docs, setDocs] = useState<DocumentSummary[]>([]);
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [loading, setLoading] = useState(true);
-  const [mode, setMode] = useState<SearchMode>('filters');
+function MatchChip({ type }: { type: string }) {
+  const isField    = type.startsWith('field:');
+  const isEntity   = type.startsWith('entity:');
+  const isContent  = type === 'content';
+  const isFilename = type === 'filename';
+  const isClass    = type === 'classification';
 
-  // Filter-based search
-  const [statusFilter, setStatusFilter] = useState('');
-  const [classFilter, setClassFilter] = useState('');
-  const [nameFilter, setNameFilter] = useState('');
-  const [lifecycleFilter, setLifecycleFilter] = useState<'' | 'archived' | 'trashed'>('');
+  let bg = 'bg-gray-800 text-gray-400';
+  if (isField)    bg = 'bg-indigo-900/40 text-indigo-300';
+  if (isEntity)   bg = 'bg-teal-900/40 text-teal-300';
+  if (isContent)  bg = 'bg-amber-900/40 text-amber-300';
+  if (isFilename) bg = 'bg-blue-900/40 text-blue-300';
+  if (isClass)    bg = 'bg-purple-900/40 text-purple-300';
 
-  // Content search
-  const [contentQuery, setContentQuery] = useState('');
-
-  // Entities tab
-  const [entities, setEntities] = useState<EntityItem[]>([]);
-  const [entitiesTotal, setEntitiesTotal] = useState(0);
-  const [entitiesLoading, setEntitiesLoading] = useState(false);
-  const [selectedEntity, setSelectedEntity] = useState<EntityItem | null>(null);
-  const [entityDocs, setEntityDocs] = useState<DocumentSummary[]>([]);
-  const [entityDocsLoading, setEntityDocsLoading] = useState(false);
-  const [entityTypes, setEntityTypes] = useState<string[]>([]);
-  const [activeTypeTag, setActiveTypeTag] = useState<string>('all');
-  const [entityNameFilter, setEntityNameFilter] = useState('');
-  const [entityPage, setEntityPage] = useState(1);
-  const ENTITY_PAGE_SIZE = 50;
-
-  const loadFiltered = async (p = page) => {
-    setLoading(true);
-    try {
-      const params: Record<string, string> = { page: String(p), page_size: '20' };
-      if (statusFilter) params.status = statusFilter;
-      if (classFilter) params.classification = classFilter;
-      if (nameFilter) params.search = nameFilter;
-      if (lifecycleFilter === 'archived') params.archived = 'true';
-      if (lifecycleFilter === 'trashed') params.trashed = 'true';
-      const res = await api.getDocuments(params);
-      setDocs(res.documents);
-      setSearchResults([]);
-      setTotal(res.total);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadContent = async (p = 1) => {
-    if (!contentQuery.trim()) return;
-    setLoading(true);
-    try {
-      const res = await api.search(contentQuery.trim(), p);
-      setSearchResults(res.results);
-      setDocs([]);
-      setTotal(res.total);
-      setPage(p);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadEntities = useCallback(async (p = entityPage, typeTag = activeTypeTag, nameQ = entityNameFilter) => {
-    setEntitiesLoading(true);
-    try {
-      const params: Record<string, string> = { page: String(p), page_size: String(ENTITY_PAGE_SIZE) };
-      if (typeTag && typeTag !== 'all') params.entity_type = typeTag;
-      if (nameQ.trim()) params.search = nameQ.trim();
-      const res = await api.getEntities(params);
-      setEntities(res.items);
-      setEntitiesTotal(res.total);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setEntitiesLoading(false);
-    }
-  }, [entityPage, activeTypeTag, entityNameFilter]);
-
-  const loadEntityTypes = async () => {
-    try {
-      const types = await api.getEntityTypes();
-      setEntityTypes(types);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const loadEntityDocs = async (entityId: string) => {
-    setEntityDocsLoading(true);
-    try {
-      const res = await api.getDocuments({ entity_id: entityId, page_size: '100' });
-      setEntityDocs(res.documents);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setEntityDocsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (mode === 'filters') loadFiltered(page);
-  }, [page, statusFilter, classFilter]);
-
-  const handleFilterSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    setPage(1);
-    loadFiltered(1);
-  };
-
-  const handleContentSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    setPage(1);
-    loadContent(1);
-  };
-
-  const switchMode = (m: SearchMode) => {
-    setMode(m);
-    setPage(1);
-    setTotal(0);
-    setSelectedEntity(null);
-    setEntityDocs([]);
-    if (m === 'filters') {
-      setSearchResults([]);
-      loadFiltered(1);
-    } else if (m === 'content') {
-      setDocs([]);
-    } else if (m === 'entities') {
-      setDocs([]);
-      setSearchResults([]);
-      setEntityPage(1);
-      setActiveTypeTag('all');
-      setEntityNameFilter('');
-      loadEntities(1, 'all', '');
-      loadEntityTypes();
-    }
-  };
-
-  const clearFilters = () => {
-    setStatusFilter('');
-    setClassFilter('');
-    setNameFilter('');
-    setLifecycleFilter('');
-    setPage(1);
-  };
-
-  const hasActiveFilters = !!(statusFilter || classFilter || nameFilter || lifecycleFilter);
-
-  const entityTotalPages = Math.ceil(entitiesTotal / ENTITY_PAGE_SIZE);
+  const label = isField   ? type.slice(6)
+              : isEntity  ? type.slice(7)
+              : type;
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-white">Search</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          {mode === 'entities' ? `${entitiesTotal} entities` : `${total} document${total !== 1 ? 's' : ''} found`}
-        </p>
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${bg}`}>
+      {label}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Page component
+// ---------------------------------------------------------------------------
+
+const PAGE_SIZE = 20;
+
+export default function DocumentsPage() {
+  // — search state -----------------------------------------------------------
+  const [query, setQuery]     = useState('');
+  const [activeQ, setActiveQ] = useState('');         // committed query
+  const [scopes, setScopes]   = useState<Set<SearchScope>>(new Set(ALL_SCOPES));
+
+  // — facet state ------------------------------------------------------------
+  const [statusFilter, setStatusFilter]       = useState('');
+  const [classFilter, setClassFilter]         = useState('');
+  const [lifecycleFilter, setLifecycleFilter] = useState<LifecycleFilter>('');
+  const [showFacets, setShowFacets]           = useState(false);
+
+  // — results ----------------------------------------------------------------
+  const [results, setResults]       = useState<SearchResult[]>([]);
+  const [browseDocs, setBrowseDocs] = useState<DocumentSummary[]>([]);
+  const [total, setTotal]           = useState(0);
+  const [page, setPage]             = useState(1);
+  const [loading, setLoading]       = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // — browse (no query) mode -------------------------------------------------
+  const loadBrowse = useCallback(async (p = 1) => {
+    setLoading(true);
+    try {
+      const params: Record<string, string> = { page: String(p), page_size: String(PAGE_SIZE) };
+      if (statusFilter)   params.status         = statusFilter;
+      if (classFilter)    params.classification  = classFilter;
+      if (lifecycleFilter === 'archived') params.archived = 'true';
+      if (lifecycleFilter === 'trashed')  params.trashed  = 'true';
+      const res = await api.getDocuments(params);
+      setBrowseDocs(res.documents);
+      setResults([]);
+      setTotal(res.total);
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter, classFilter, lifecycleFilter]);
+
+  // — search mode ------------------------------------------------------------
+  const runSearch = useCallback(async (q: string, p = 1) => {
+    if (!q.trim()) { setActiveQ(''); loadBrowse(p); return; }
+    setLoading(true);
+    try {
+      const res = await api.search(q.trim(), {
+        scope: [...scopes].join(','),
+        status: statusFilter || undefined,
+        classification: classFilter || undefined,
+        page: p,
+        page_size: PAGE_SIZE,
+      });
+      setResults(res.results);
+      setBrowseDocs([]);
+      setTotal(res.total);
+    } finally {
+      setLoading(false);
+    }
+  }, [scopes, statusFilter, classFilter]);
+
+  // Initial load
+  useEffect(() => { loadBrowse(1); }, []);
+
+  // Re-run when facets change while a query is active
+  useEffect(() => {
+    if (activeQ) runSearch(activeQ, 1);
+    else         loadBrowse(1);
+    setPage(1);
+  }, [statusFilter, classFilter, lifecycleFilter]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setPage(1);
+    setActiveQ(query);
+    runSearch(query, 1);
+  };
+
+  const clearQuery = () => {
+    setQuery('');
+    setActiveQ('');
+    setPage(1);
+    loadBrowse(1);
+    inputRef.current?.focus();
+  };
+
+  const clearAllFacets = () => {
+    setStatusFilter('');
+    setClassFilter('');
+    setLifecycleFilter('');
+  };
+
+  const toggleScope = (s: SearchScope) => {
+    setScopes(prev => {
+      const next = new Set(prev);
+      if (next.has(s) && next.size > 1) next.delete(s);
+      else next.add(s);
+      return next;
+    });
+  };
+
+  const goPage = (p: number) => {
+    setPage(p);
+    if (activeQ) runSearch(activeQ, p);
+    else         loadBrowse(p);
+  };
+
+  const hasActiveFacets = !!(statusFilter || classFilter || lifecycleFilter);
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+  const isSearchMode = !!activeQ;
+
+  return (
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Search</h1>
+          <p className="text-sm text-gray-500 mt-0.5">
+            {loading ? 'Searching…' : `${total.toLocaleString()} document${total !== 1 ? 's' : ''}${isSearchMode ? ` for "${activeQ}"` : ''}`}
+          </p>
+        </div>
       </div>
 
-      <div className="flex gap-1 border-b border-gray-800">
-        {([
-          { key: 'filters' as const, label: 'Filter by fields' },
-          { key: 'content' as const, label: 'Search content' },
-          { key: 'entities' as const, label: 'Entities' },
-        ]).map(t => (
-          <button key={t.key} onClick={() => switchMode(t.key)}
-            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-              mode === t.key ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300'
-            }`}
-          >
-            {t.label}
+      {/* Search bar */}
+      <form onSubmit={handleSubmit} className="flex gap-2">
+        <div className="relative flex-1">
+          <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Search documents, fields, entities…"
+            className="w-full pl-10 pr-10 py-2.5 rounded-xl bg-gray-900 border border-gray-700 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
+          />
+          {query && (
+            <button type="button" onClick={clearQuery}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300">
+              <X size={15} />
+            </button>
+          )}
+        </div>
+        <button type="submit" disabled={loading}
+          className="px-5 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-medium hover:bg-blue-500 disabled:opacity-50 transition-colors">
+          Search
+        </button>
+        <button type="button" onClick={() => setShowFacets(v => !v)}
+          className={`flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-sm border transition-colors ${
+            showFacets || hasActiveFacets
+              ? 'bg-blue-600/15 border-blue-500/40 text-blue-400'
+              : 'bg-gray-900 border-gray-700 text-gray-400 hover:text-gray-200'
+          }`}
+          title="Filters">
+          <SlidersHorizontal size={15} />
+          {hasActiveFacets && <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />}
+        </button>
+      </form>
+
+      {/* Scope toggles (always visible) */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-gray-600 mr-1">Search in:</span>
+        {ALL_SCOPES.map(s => (
+          <button key={s} onClick={() => toggleScope(s)}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+              scopes.has(s)
+                ? 'bg-blue-600/20 border-blue-500/40 text-blue-300'
+                : 'bg-gray-900 border-gray-700 text-gray-500 hover:text-gray-300'
+            }`}>
+            {SCOPE_LABELS[s].icon}
+            {SCOPE_LABELS[s].label}
           </button>
         ))}
       </div>
 
-      {mode === 'filters' && (
-        <div className="flex flex-wrap gap-3 items-end">
-          <form onSubmit={handleFilterSearch} className="flex gap-2">
-            <input
-              value={nameFilter} onChange={e => setNameFilter(e.target.value)}
-              className="px-3.5 py-2 rounded-lg bg-gray-900 border border-gray-800 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 w-56"
-              placeholder="Search by filename..."
-            />
-            <button type="submit" className="px-4 py-2 rounded-lg bg-gray-800 text-gray-300 text-sm hover:bg-gray-700 transition-colors">Filter</button>
-          </form>
-          <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); }}
-            className="px-3 py-2 rounded-lg bg-gray-900 border border-gray-800 text-gray-300 text-sm focus:outline-none">
-            <option value="">All statuses</option>
-            <option value="COMPLETED">Completed</option>
-            <option value="INGESTED">Ingested</option>
-            <option value="OCR_DONE">OCR Done</option>
-            <option value="CLASSIFIED">Classified</option>
-          </select>
-          <select value={lifecycleFilter} onChange={e => { setLifecycleFilter(e.target.value as '' | 'archived' | 'trashed'); setPage(1); loadFiltered(1); }}
-            className="px-3 py-2 rounded-lg bg-gray-900 border border-gray-800 text-gray-300 text-sm focus:outline-none">
-            <option value="">Active documents</option>
-            <option value="archived">Archived</option>
-            <option value="trashed">Trash</option>
-          </select>
-          <input value={classFilter} onChange={e => { setClassFilter(e.target.value); setPage(1); }}
-            className="px-3.5 py-2 rounded-lg bg-gray-900 border border-gray-800 text-white text-sm placeholder-gray-500 focus:outline-none w-40"
-            placeholder="Classification..."
-          />
-          {hasActiveFilters && (
-            <button onClick={clearFilters} className="flex items-center gap-1 px-3 py-2 rounded-lg text-gray-500 hover:text-gray-300 text-sm">
-              <X size={14} /> Clear
+      {/* Facet sidebar (collapsible) */}
+      {showFacets && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-wrap gap-4 items-end">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-gray-500 uppercase tracking-wider">Status</label>
+            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+              className="px-3 py-1.5 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option value="">Any</option>
+              <option value="COMPLETED">Completed</option>
+              <option value="INGESTED">Ingested</option>
+              <option value="OCR_DONE">OCR Done</option>
+              <option value="CLASSIFIED">Classified</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-gray-500 uppercase tracking-wider">Classification</label>
+            <input value={classFilter} onChange={e => setClassFilter(e.target.value)}
+              placeholder="e.g. invoice"
+              className="px-3 py-1.5 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 w-40" />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-gray-500 uppercase tracking-wider">Lifecycle</label>
+            <select value={lifecycleFilter} onChange={e => setLifecycleFilter(e.target.value as LifecycleFilter)}
+              className="px-3 py-1.5 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option value="">Active</option>
+              <option value="archived">Archived</option>
+              <option value="trashed">Trash</option>
+            </select>
+          </div>
+          {hasActiveFacets && (
+            <button onClick={clearAllFacets}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-gray-500 hover:text-gray-300 transition-colors">
+              <X size={13} /> Clear filters
             </button>
           )}
         </div>
       )}
 
-      {mode === 'content' && (
-        <form onSubmit={handleContentSearch} className="flex gap-3">
-          <div className="flex-1 relative">
-            <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" />
-            <input
-              value={contentQuery} onChange={e => setContentQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2.5 rounded-lg bg-gray-900 border border-gray-800 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Search by document content, fields, entities..."
-            />
-          </div>
-          <button type="submit" disabled={loading} className="px-6 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-500 disabled:opacity-50 transition-colors">
-            {loading ? 'Searching...' : 'Search'}
-          </button>
-        </form>
-      )}
-
-      {mode === 'entities' && (
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => { setActiveTypeTag('all'); setEntityPage(1); loadEntities(1, 'all', entityNameFilter); }}
-              className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
-                activeTypeTag === 'all' ? 'bg-blue-600/20 border-blue-500/50 text-blue-400' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-gray-200'
-              }`}
-            >All</button>
-            {entityTypes.map(t => (
-              <button key={t}
-                onClick={() => { setActiveTypeTag(t); setEntityPage(1); loadEntities(1, t, entityNameFilter); }}
-                className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors capitalize ${
-                  activeTypeTag === t ? 'bg-blue-600/20 border-blue-500/50 text-blue-400' : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-gray-200'
-                }`}
-              >{t}</button>
-            ))}
-            <div className="ml-auto flex gap-2">
-              <input
-                value={entityNameFilter}
-                onChange={e => setEntityNameFilter(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') { setEntityPage(1); loadEntities(1, activeTypeTag, entityNameFilter); } }}
-                placeholder="Filter by name..."
-                className="px-3 py-1.5 rounded-lg bg-gray-900 border border-gray-800 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 w-48"
-              />
-              <button
-                onClick={() => { setEntityPage(1); loadEntities(1, activeTypeTag, entityNameFilter); }}
-                className="px-3 py-1.5 rounded-lg bg-gray-800 text-gray-300 text-sm hover:bg-gray-700 transition-colors"
-              ><Search size={14} /></button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-1 space-y-2">
-              {entitiesLoading ? (
-                <div className="text-gray-500">Loading entities...</div>
-              ) : (
-                <>
-                  <div className="space-y-1 max-h-[60vh] overflow-y-auto">
-                    {entities.map(e => (
-                      <button key={e.id} onClick={() => { setSelectedEntity(e); loadEntityDocs(e.id); }}
-                        className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors flex items-center justify-between ${
-                          selectedEntity?.id === e.id ? 'bg-blue-600/20 text-blue-400' : 'text-gray-300 hover:bg-gray-800'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <Link to={`/admin/entities/${e.id}`} className="truncate text-blue-400 hover:underline">{e.name}</Link>
-                          <span className="text-[10px] text-gray-600 capitalize flex-shrink-0">{e.entity_type}</span>
-                        </div>
-                        <ChevronRight size={14} className="text-gray-600 flex-shrink-0" />
-                      </button>
-                    ))}
-                  </div>
-                  {entities.length === 0 && <div className="text-gray-600 text-sm">No entities found</div>}
-                  {entityTotalPages > 1 && (
-                    <div className="flex items-center justify-center gap-2 pt-2">
-                      <button onClick={() => { const p = Math.max(1, entityPage - 1); setEntityPage(p); loadEntities(p, activeTypeTag, entityNameFilter); }}
-                        disabled={entityPage === 1} className="p-1.5 rounded bg-gray-800 text-gray-400 hover:bg-gray-700 disabled:opacity-50">
-                        <ChevronLeft size={14} />
-                      </button>
-                      <span className="text-xs text-gray-500">{entityPage} / {entityTotalPages}</span>
-                      <button onClick={() => { const p = entityPage + 1; setEntityPage(p); loadEntities(p, activeTypeTag, entityNameFilter); }}
-                        disabled={entityPage >= entityTotalPages} className="p-1.5 rounded bg-gray-800 text-gray-400 hover:bg-gray-700 disabled:opacity-50">
-                        <ChevronRight size={14} />
-                      </button>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-
-            <div className="lg:col-span-2">
-              {selectedEntity ? (
-                <div className="space-y-4">
-                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-                    <div className="flex items-center gap-3 mb-2">
-                      <span className="text-white font-medium text-lg">{selectedEntity.name}</span>
-                      <Badge value={selectedEntity.entity_type} />
-                    </div>
-                    {Object.keys(selectedEntity.fields).length > 0 && (
-                      <div className="flex flex-wrap gap-2 mt-2">
-                        {Object.entries(selectedEntity.fields).map(([k, v]) => (
-                          <span key={k} className="text-xs bg-gray-800 rounded px-2 py-1 text-gray-400">
-                            <span className="text-gray-500">{k}:</span> {v}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  {entityDocsLoading ? (
-                    <div className="text-gray-500">Loading documents...</div>
-                  ) : (
-                    <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b border-gray-800 text-gray-500 text-xs uppercase tracking-wider">
-                            <th className="text-left px-4 py-3">Filename</th>
-                            <th className="text-left px-4 py-3">Status</th>
-                            <th className="text-left px-4 py-3">Classification</th>
-                            <th className="text-left px-4 py-3">Confidence</th>
-                            <th className="text-left px-4 py-3">Date</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {entityDocs.map(d => (
-                            <tr key={d.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                              <td className="px-4 py-3">
-                                <Link to={`/documents/${d.id}`} className="text-blue-400 hover:underline">{d.filename}</Link>
-                              </td>
-                              <td className="px-4 py-3"><Badge value={d.status} /></td>
-                              <td className="px-4 py-3 text-gray-400">{[d.classification_label, d.classification_subcategory_label].filter(Boolean).join(' / ') || '---'}</td>
-                              <td className="px-4 py-3"><ConfidenceBadge value={d.pipeline_confidence} /></td>
-                              <td className="px-4 py-3 text-gray-500 text-xs">{new Date(d.created_at).toLocaleString()}</td>
-                            </tr>
-                          ))}
-                          {entityDocs.length === 0 && (
-                            <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-600">No documents linked to this entity</td></tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center text-gray-600">
-                  Select an entity to view its documents
-                </div>
-              )}
-            </div>
-          </div>
+      {/* Active filter pills */}
+      {hasActiveFacets && !showFacets && (
+        <div className="flex flex-wrap gap-2">
+          {statusFilter && (
+            <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-gray-800 border border-gray-700 text-gray-300">
+              Status: {statusFilter}
+              <button onClick={() => setStatusFilter('')}><X size={11} /></button>
+            </span>
+          )}
+          {classFilter && (
+            <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-gray-800 border border-gray-700 text-gray-300">
+              Class: {classFilter}
+              <button onClick={() => setClassFilter('')}><X size={11} /></button>
+            </span>
+          )}
+          {lifecycleFilter && (
+            <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-gray-800 border border-gray-700 text-gray-300">
+              {lifecycleFilter}
+              <button onClick={() => setLifecycleFilter('')}><X size={11} /></button>
+            </span>
+          )}
         </div>
       )}
 
-      {mode !== 'entities' && (
-        <>
-          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-800 text-gray-500 text-xs uppercase tracking-wider">
-                  <th className="text-left px-4 py-3">Filename</th>
-                  {mode === 'content' && <th className="text-left px-4 py-3">Match</th>}
-                  <th className="text-left px-4 py-3">Status</th>
-                  <th className="text-left px-4 py-3">Classification</th>
-                  <th className="text-left px-4 py-3">Confidence</th>
-                  <th className="text-left px-4 py-3">Date</th>
+      {/* Results table */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-800 text-gray-500 text-xs uppercase tracking-wider">
+              <th className="text-left px-4 py-3">Document</th>
+              {isSearchMode && <th className="text-left px-4 py-3">Match</th>}
+              <th className="text-left px-4 py-3">Classification</th>
+              <th className="text-left px-4 py-3">Status</th>
+              <th className="text-left px-4 py-3">Confidence</th>
+              <th className="text-left px-4 py-3">Date</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr>
+                <td colSpan={isSearchMode ? 6 : 5} className="px-4 py-10 text-center text-gray-600">
+                  Searching…
+                </td>
+              </tr>
+            ) : isSearchMode ? (
+              results.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-4 py-10 text-center text-gray-600">
+                    No results for <span className="text-gray-400">"{activeQ}"</span>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-600">Loading...</td></tr>
-                ) : mode === 'filters' ? (
-                  docs.length === 0 ? (
-                    <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-600">No documents found</td></tr>
-                  ) : docs.map(d => (
-                    <tr key={d.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                      <td className="px-4 py-3">
-                        <Link to={`/documents/${d.id}`} className="text-blue-400 hover:underline">{d.filename}</Link>
-                      </td>
-                      <td className="px-4 py-3"><Badge value={d.status} /></td>
-                      <td className="px-4 py-3 text-gray-400">{[d.classification_label, d.classification_subcategory_label].filter(Boolean).join(' / ') || '---'}</td>
-                      <td className="px-4 py-3"><ConfidenceBadge value={d.pipeline_confidence} /></td>
-                      <td className="px-4 py-3 text-gray-500 text-xs">{new Date(d.created_at).toLocaleString()}</td>
-                    </tr>
-                  ))
-                ) : (
-                  searchResults.length === 0 ? (
-                    <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-600">{contentQuery ? 'No results found' : 'Enter a search query'}</td></tr>
-                  ) : searchResults.map((r, i) => (
-                    <tr key={i} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                      <td className="px-4 py-3">
-                        <Link to={`/documents/${r.document_id}`} className="text-blue-400 hover:underline">{r.filename || r.document_id}</Link>
-                      </td>
-                      <td className="px-4 py-3">
-                        <Badge value={r.match_type} />
-                        <span className="ml-2 text-gray-500 text-xs truncate max-w-[200px] inline-block align-middle">{r.match_value}</span>
-                      </td>
-                      <td className="px-4 py-3">{r.status ? <Badge value={r.status} /> : '---'}</td>
-                      <td className="px-4 py-3 text-gray-400">{r.classification_label || '---'}</td>
-                      <td className="px-4 py-3 text-gray-600">---</td>
-                      <td className="px-4 py-3" />
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+              ) : results.map((r, i) => (
+                <tr key={`${r.document_id}-${i}`} className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
+                  <td className="px-4 py-3">
+                    <Link to={`/documents/${r.document_id}`}
+                      className="text-blue-400 hover:underline font-medium truncate block max-w-xs">
+                      {r.filename || r.document_id}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-3 max-w-xs">
+                    <div className="flex flex-col gap-0.5">
+                      <MatchChip type={r.match_type} />
+                      {r.snippet && (
+                        <span className="text-xs text-gray-500 truncate mt-0.5 block">{r.snippet}</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-gray-400 text-xs">
+                    {[r.classification_label, r.classification_subcategory_label].filter(Boolean).join(' / ') || '—'}
+                  </td>
+                  <td className="px-4 py-3">
+                    {r.status ? <Badge value={r.status} /> : <span className="text-gray-600">—</span>}
+                  </td>
+                  <td className="px-4 py-3"><ConfidenceBadge value={r.pipeline_confidence} /></td>
+                  <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
+                    {r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'}
+                  </td>
+                </tr>
+              ))
+            ) : (
+              browseDocs.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-10 text-center text-gray-600">No documents found</td>
+                </tr>
+              ) : browseDocs.map(d => (
+                <tr key={d.id} className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
+                  <td className="px-4 py-3">
+                    <Link to={`/documents/${d.id}`} className="text-blue-400 hover:underline font-medium">
+                      {d.filename}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-3 text-gray-400 text-xs">
+                    {[d.classification_label, d.classification_subcategory_label].filter(Boolean).join(' / ') || '—'}
+                  </td>
+                  <td className="px-4 py-3"><Badge value={d.status} /></td>
+                  <td className="px-4 py-3"><ConfidenceBadge value={d.pipeline_confidence} /></td>
+                  <td className="px-4 py-3 text-gray-500 text-xs">{new Date(d.created_at).toLocaleDateString()}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
 
-          {total > 20 && (
-            <div className="flex items-center justify-center gap-2">
-              <button
-                onClick={() => { const p = Math.max(1, page - 1); setPage(p); if (mode === 'content') loadContent(p); }}
-                disabled={page === 1}
-                className="px-3 py-1.5 rounded bg-gray-800 text-gray-400 text-sm hover:bg-gray-700 disabled:opacity-50"
-              >Prev</button>
-              <span className="text-sm text-gray-500">Page {page} of {Math.ceil(total / 20)}</span>
-              <button
-                onClick={() => { const p = page + 1; setPage(p); if (mode === 'content') loadContent(p); }}
-                disabled={page * 20 >= total}
-                className="px-3 py-1.5 rounded bg-gray-800 text-gray-400 text-sm hover:bg-gray-700 disabled:opacity-50"
-              >Next</button>
-            </div>
-          )}
-        </>
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-3">
+          <button onClick={() => goPage(Math.max(1, page - 1))} disabled={page === 1}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 text-sm hover:bg-gray-700 disabled:opacity-40 transition-colors">
+            <ChevronLeft size={14} /> Prev
+          </button>
+          <span className="text-sm text-gray-500">
+            Page <span className="text-gray-300 font-medium">{page}</span> of {totalPages}
+          </span>
+          <button onClick={() => goPage(page + 1)} disabled={page >= totalPages}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 text-sm hover:bg-gray-700 disabled:opacity-40 transition-colors">
+            Next <ChevronRight size={14} />
+          </button>
+        </div>
       )}
     </div>
   );

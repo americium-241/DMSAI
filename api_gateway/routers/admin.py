@@ -19,7 +19,7 @@ from dmsai_models import (
     Document, DocumentEntity,
     Entity, EntityField,
     CanonicalDocumentClass, CanonicalField,
-    Organization, SystemConfig, User, get_session, init_db,
+    Organization, OrgIngestionConfig, SystemConfig, User, UserOrganization, get_session, init_db,
 )
 from auth import require_admin, require_manager, get_current_user, hash_password, validate_password
 
@@ -40,13 +40,26 @@ def _json_or_none(raw: Optional[str]):
 # ---------------------------------------------------------------------------
 
 def _org_entity_ids(session, org_id: str) -> set[str]:
-    """Return entity IDs linked to at least one document in the given org."""
-    rows = session.exec(
+    """Return entity IDs scoped to the given org.
+
+    Prefers the direct organization_id column on Entity (new schema); falls back
+    to the document-join approach for legacy entities that have no org tag yet.
+    """
+    # Entities directly tagged to this org
+    direct = set(session.exec(
+        select(Entity.id).where(Entity.organization_id == org_id)
+    ).all())
+    # Legacy entities (no org tag) that appear in a document of this org
+    legacy = set(session.exec(
         select(DocumentEntity.entity_id).distinct()
         .join(Document, Document.id == DocumentEntity.document_id)
-        .where(Document.organization_id == org_id)
-    ).all()
-    return set(rows)
+        .where(
+            Document.organization_id == org_id,
+            Entity.organization_id.is_(None),
+        )
+        .join(Entity, Entity.id == DocumentEntity.entity_id)
+    ).all())
+    return direct | legacy
 
 
 @router.get("/entities/types")
@@ -69,8 +82,12 @@ async def list_entities(
     search: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
-    user: User = Depends(require_manager),
+    user: User = Depends(get_current_user),
 ):
+    """List entities visible to the current user's organization.
+
+    Accessible to all authenticated users (read-only).
+    """
     init_db()
     with get_session() as session:
         eid_set = _org_entity_ids(session, user.organization_id)
@@ -79,23 +96,53 @@ async def list_entities(
         if entity_type:
             query = query.where(Entity.entity_type == entity_type)
         if search:
-            query = query.where(Entity.name.contains(search))
+            query = query.where(
+                (Entity.name.contains(search)) | (Entity.canonical_name.contains(search))
+            )
 
         from sqlmodel import func as sqlfunc
         count_sub = query.subquery()
         total = session.exec(select(sqlfunc.count()).select_from(count_sub)).one()
 
         offset = (page - 1) * page_size
-        entities = session.exec(query.offset(offset).limit(page_size)).all()
+        entities = session.exec(
+            query.order_by(Entity.name).offset(offset).limit(page_size)
+        ).all()
+
+        # Pre-fetch doc counts in one query
+        entity_ids = [e.id for e in entities]
+        doc_count_rows = session.exec(
+            select(DocumentEntity.entity_id, sqlfunc.count(DocumentEntity.document_id))
+            .join(Document, Document.id == DocumentEntity.document_id)
+            .where(
+                DocumentEntity.entity_id.in_(entity_ids),
+                Document.organization_id == user.organization_id,
+            )
+            .group_by(DocumentEntity.entity_id)
+        ).all()
+        doc_count_map = {row[0]: row[1] for row in doc_count_rows}
+
         result = []
         for e in entities:
             fields = session.exec(select(EntityField).where(EntityField.entity_id == e.id)).all()
+            # Surface only identifier-class fields as the key fields
+            key_fields = {
+                f.field_name: f.field_value
+                for f in fields
+                if f.field_name.lower() in {
+                    "tax_id", "siret", "siren", "vat_number",
+                    "registration_number", "email", "phone",
+                }
+            }
             result.append({
-                "id": e.id, "name": e.name,
+                "id": e.id,
+                "name": e.name,
                 "canonical_name": e.canonical_name,
                 "entity_type": e.entity_type,
                 "created_at": str(e.created_at),
                 "fields": {f.field_name: f.field_value for f in fields},
+                "key_fields": key_fields,
+                "doc_count": doc_count_map.get(e.id, 0),
             })
         return {"items": result, "total": total, "page": page, "page_size": page_size}
 
@@ -759,8 +806,9 @@ async def admin_create_user(body: AdminUserCreate, admin: User = Depends(require
         if existing:
             raise HTTPException(status_code=409, detail="Email already registered")
 
+        new_user_id = str(uuid.uuid4())
         new_user = User(
-            id=str(uuid.uuid4()),
+            id=new_user_id,
             email=body.email,
             password_hash=hash_password(body.password),
             full_name=body.full_name,
@@ -772,6 +820,14 @@ async def admin_create_user(body: AdminUserCreate, admin: User = Depends(require
             created_at=datetime.utcnow(),
         )
         session.add(new_user)
+        # Always create the UserOrganization membership record
+        session.add(UserOrganization(
+            id=str(uuid.uuid4()),
+            user_id=new_user_id,
+            organization_id=target_org_id,
+            role=body.role,
+            is_default=True,
+        ))
         session.commit()
         return {
             "status": "created",
@@ -798,7 +854,16 @@ async def admin_deactivate_user(user_id: str, admin: User = Depends(require_admi
 
     with get_session() as session:
         user = session.get(User, user_id)
-        if not user or user.organization_id != admin.organization_id:
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        # Only admins who share an org membership with the target user may deactivate them
+        membership = session.exec(
+            select(UserOrganization).where(
+                UserOrganization.user_id == user_id,
+                UserOrganization.organization_id == admin.organization_id,
+            )
+        ).first()
+        if not membership:
             raise HTTPException(status_code=404, detail="User not found")
         if not user.is_active:
             return {"status": "already_inactive", "id": user_id}
@@ -816,7 +881,16 @@ async def admin_deactivate_user(user_id: str, admin: User = Depends(require_admi
 async def admin_update_user(user_id: str, body: AdminUserUpdate, admin: User = Depends(require_admin)):
     with get_session() as session:
         user = session.get(User, user_id)
-        if not user or user.organization_id != admin.organization_id:
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        # Only admins who share an org membership with the target user may update them
+        membership = session.exec(
+            select(UserOrganization).where(
+                UserOrganization.user_id == user_id,
+                UserOrganization.organization_id == admin.organization_id,
+            )
+        ).first()
+        if not membership:
             raise HTTPException(status_code=404, detail="User not found")
         if body.full_name is not None:
             user.full_name = body.full_name
@@ -828,7 +902,11 @@ async def admin_update_user(user_id: str, body: AdminUserUpdate, admin: User = D
                     status_code=400,
                     detail="You cannot demote your own admin account. Ask another admin to do this.",
                 )
-            user.role = body.role
+            # Update the org-specific role and sync to User.role if this is the user's home org
+            membership.role = body.role
+            session.add(membership)
+            if user.organization_id == admin.organization_id:
+                user.role = body.role
         if body.is_active is not None:
             if user_id == admin.id and not body.is_active:
                 raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
@@ -889,3 +967,230 @@ async def admin_create_organization(body: OrganizationCreate, admin: User = Depe
         session.add(org)
         session.commit()
         return {"status": "created", "id": org.id, "name": org.name, "created_at": str(org.created_at)}
+
+
+# ---------------------------------------------------------------------------
+# Admin — Organization membership management
+# ---------------------------------------------------------------------------
+
+class MemberAdd(BaseModel):
+    user_id: str
+    role: str = "user"
+
+
+class MemberUpdate(BaseModel):
+    role: str
+
+
+@router.get("/organizations/{org_id}/members", summary="List members of an organization")
+async def admin_list_org_members(org_id: str, admin: User = Depends(require_admin)):
+    with get_session() as session:
+        org = session.get(Organization, org_id)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        memberships = session.exec(
+            select(UserOrganization).where(UserOrganization.organization_id == org_id)
+        ).all()
+        result = []
+        for m in memberships:
+            user = session.get(User, m.user_id)
+            if user:
+                result.append({
+                    "membership_id": m.id,
+                    "user_id": user.id,
+                    "email": user.email,
+                    "full_name": user.full_name,
+                    "role": m.role,
+                    "is_default": m.is_default,
+                    "joined_at": str(m.joined_at),
+                    "is_active": user.is_active,
+                })
+        return result
+
+
+@router.post("/organizations/{org_id}/members", summary="Add a user to an organization")
+async def admin_add_org_member(org_id: str, body: MemberAdd, admin: User = Depends(require_admin)):
+    if body.role not in ("admin", "manager", "user"):
+        raise HTTPException(status_code=400, detail="role must be admin, manager, or user")
+    with get_session() as session:
+        org = session.get(Organization, org_id)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        user = session.get(User, body.user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        existing = session.exec(
+            select(UserOrganization).where(
+                UserOrganization.user_id == body.user_id,
+                UserOrganization.organization_id == org_id,
+            )
+        ).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="User is already a member of this organization")
+        # Check if this is the user's first org membership — mark as default
+        any_membership = session.exec(
+            select(UserOrganization).where(UserOrganization.user_id == body.user_id)
+        ).first()
+        session.add(UserOrganization(
+            id=str(uuid.uuid4()),
+            user_id=body.user_id,
+            organization_id=org_id,
+            role=body.role,
+            is_default=(any_membership is None),
+            joined_at=datetime.utcnow(),
+        ))
+        session.commit()
+    return {"status": "added", "user_id": body.user_id, "org_id": org_id, "role": body.role}
+
+
+@router.put(
+    "/organizations/{org_id}/members/{user_id}",
+    summary="Update a member's role within an organization",
+)
+async def admin_update_org_member(
+    org_id: str, user_id: str, body: MemberUpdate, admin: User = Depends(require_admin)
+):
+    if body.role not in ("admin", "manager", "user"):
+        raise HTTPException(status_code=400, detail="role must be admin, manager, or user")
+    with get_session() as session:
+        membership = session.exec(
+            select(UserOrganization).where(
+                UserOrganization.user_id == user_id,
+                UserOrganization.organization_id == org_id,
+            )
+        ).first()
+        if not membership:
+            raise HTTPException(status_code=404, detail="Membership not found")
+        membership.role = body.role
+        session.add(membership)
+        session.commit()
+    return {"status": "updated", "user_id": user_id, "org_id": org_id, "role": body.role}
+
+
+@router.delete(
+    "/organizations/{org_id}/members/{user_id}",
+    summary="Remove a user from an organization",
+)
+async def admin_remove_org_member(org_id: str, user_id: str, admin: User = Depends(require_admin)):
+    if user_id == admin.id:
+        raise HTTPException(status_code=400, detail="You cannot remove yourself from an organization")
+    with get_session() as session:
+        membership = session.exec(
+            select(UserOrganization).where(
+                UserOrganization.user_id == user_id,
+                UserOrganization.organization_id == org_id,
+            )
+        ).first()
+        if not membership:
+            raise HTTPException(status_code=404, detail="Membership not found")
+        session.delete(membership)
+        session.commit()
+    return {"status": "removed", "user_id": user_id, "org_id": org_id}
+
+
+# ---------------------------------------------------------------------------
+# Admin — Per-org ingestion config
+# ---------------------------------------------------------------------------
+
+class IngestionConfigCreate(BaseModel):
+    name: str
+    source_type: str    # "directory" | "email"
+    config: dict        # free-form settings for this source type
+    is_active: bool = True
+
+
+class IngestionConfigUpdate(BaseModel):
+    name: Optional[str] = None
+    config: Optional[dict] = None
+    is_active: Optional[bool] = None
+
+
+@router.get("/organizations/{org_id}/ingestion", summary="List ingestion configs for an org")
+async def admin_list_ingestion_configs(org_id: str, admin: User = Depends(require_admin)):
+    with get_session() as session:
+        org = session.get(Organization, org_id)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        configs = session.exec(
+            select(OrgIngestionConfig).where(OrgIngestionConfig.organization_id == org_id)
+        ).all()
+        return [
+            {
+                "id": c.id,
+                "name": c.name,
+                "source_type": c.source_type,
+                "config": _json_or_none(c.config_json),
+                "is_active": c.is_active,
+                "created_at": str(c.created_at),
+            }
+            for c in configs
+        ]
+
+
+@router.post("/organizations/{org_id}/ingestion", summary="Add an ingestion config to an org")
+async def admin_create_ingestion_config(
+    org_id: str, body: IngestionConfigCreate, admin: User = Depends(require_admin)
+):
+    if body.source_type not in ("directory", "email"):
+        raise HTTPException(status_code=400, detail="source_type must be 'directory' or 'email'")
+    with get_session() as session:
+        org = session.get(Organization, org_id)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        cfg = OrgIngestionConfig(
+            id=str(uuid.uuid4()),
+            organization_id=org_id,
+            name=body.name,
+            source_type=body.source_type,
+            config_json=json.dumps(body.config),
+            is_active=body.is_active,
+            created_at=datetime.utcnow(),
+        )
+        session.add(cfg)
+        session.commit()
+        return {
+            "status": "created",
+            "id": cfg.id,
+            "name": cfg.name,
+            "source_type": cfg.source_type,
+            "config": body.config,
+            "is_active": cfg.is_active,
+        }
+
+
+@router.put(
+    "/organizations/{org_id}/ingestion/{config_id}",
+    summary="Update an ingestion config",
+)
+async def admin_update_ingestion_config(
+    org_id: str, config_id: str, body: IngestionConfigUpdate, admin: User = Depends(require_admin)
+):
+    with get_session() as session:
+        cfg = session.get(OrgIngestionConfig, config_id)
+        if not cfg or cfg.organization_id != org_id:
+            raise HTTPException(status_code=404, detail="Ingestion config not found")
+        if body.name is not None:
+            cfg.name = body.name
+        if body.config is not None:
+            cfg.config_json = json.dumps(body.config)
+        if body.is_active is not None:
+            cfg.is_active = body.is_active
+        session.add(cfg)
+        session.commit()
+    return {"status": "updated", "id": config_id}
+
+
+@router.delete(
+    "/organizations/{org_id}/ingestion/{config_id}",
+    summary="Delete an ingestion config",
+)
+async def admin_delete_ingestion_config(
+    org_id: str, config_id: str, admin: User = Depends(require_admin)
+):
+    with get_session() as session:
+        cfg = session.get(OrgIngestionConfig, config_id)
+        if not cfg or cfg.organization_id != org_id:
+            raise HTTPException(status_code=404, detail="Ingestion config not found")
+        session.delete(cfg)
+        session.commit()
+    return {"status": "deleted", "id": config_id}

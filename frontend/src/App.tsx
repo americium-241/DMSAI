@@ -12,12 +12,14 @@ import UserBucketDetailPage from './pages/UserBucketDetail';
 import BucketDetailPage from './pages/BucketDetail';
 import PipelinePage from './pages/Pipeline';
 import UsersPage from './pages/admin/Users';
+import OrganizationManagement from './pages/admin/OrganizationManagement';
 import BucketManagement from './pages/admin/BucketManagement';
 import SystemConfigPage from './pages/admin/SystemConfig';
 import LLMSettingsPage from './pages/admin/LLMSettings';
 import QualityMetricsPage from './pages/admin/QualityMetrics';
 import EntityDetailPage from './pages/admin/EntityDetail';
 import ArchiveManagementPage from './pages/admin/ArchiveManagement';
+import EntityDirectoryPage from './pages/EntityDirectory';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -43,11 +45,13 @@ function AppRoutes() {
         <Route path="/" element={<DashboardPage />} />
         <Route path="/documents" element={<DocumentsPage />} />
         <Route path="/documents/:id" element={<DocumentDetailPage />} />
+        <Route path="/entities" element={<EntityDirectoryPage />} />
         <Route path="/buckets" element={<UserBucketsPage />} />
         <Route path="/buckets/:id" element={<UserBucketDetailPage />} />
         <Route path="/upload" element={<UploadPage />} />
         <Route element={<RequireRole roles={['admin', 'manager']} />}>
           <Route path="admin/users" element={<UsersPage />} />
+          <Route path="admin/organizations" element={<OrganizationManagement />} />
           <Route path="admin/buckets" element={<BucketManagement />} />
           <Route path="admin/buckets/:id" element={<BucketDetailPage />} />
           <Route path="admin/llm-settings" element={<LLMSettingsPage />} />

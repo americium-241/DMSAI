@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import os
 import uuid
 import base64
 from datetime import datetime
+from typing import Optional
 
 from dmsai_models import Document, get_session, init_db, record_pipeline_event
 
@@ -25,6 +28,7 @@ def build_ingestion_payload(
     filename: str,
     source: str = "api",
     mode: str = "auto",
+    organization_id: Optional[str] = None,
 ) -> dict:
     """Create a standardised pipeline payload from raw file bytes."""
     ext = validate_extension(filename)
@@ -41,12 +45,13 @@ def build_ingestion_payload(
             mode=mode,
             file_size_bytes=len(file_bytes),
             status="INGESTED",
+            organization_id=organization_id,
             created_at=datetime.utcnow(),
         )
         session.add(doc)
         session.commit()
 
-    return {
+    payload = {
         "workflow_id": doc_id,
         "filename": filename,
         "original_extension": ext,
@@ -56,6 +61,9 @@ def build_ingestion_payload(
         "priority": 0,
         "history": [],
     }
+    if organization_id:
+        payload["organization_id"] = organization_id
+    return payload
 
 
 async def process_document(payload: dict) -> dict:

@@ -32,6 +32,40 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 // Types
 // ---------------------------------------------------------------------------
 
+export interface OrgMembership {
+  organization_id: string;
+  organization_name: string;
+  role: string;
+  is_default: boolean;
+}
+
+export interface OrgMember {
+  membership_id: string;
+  user_id: string;
+  email: string;
+  full_name: string;
+  role: string;
+  is_default: boolean;
+  joined_at: string;
+  is_active: boolean;
+}
+
+export interface IngestionConfig {
+  id: string;
+  name: string;
+  source_type: 'directory' | 'email';
+  config: Record<string, string>;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface IngestionConfigCreate {
+  name: string;
+  source_type: 'directory' | 'email';
+  config: Record<string, string>;
+  is_active?: boolean;
+}
+
 export interface UserInfo {
   id: string;
   email: string;
@@ -42,6 +76,7 @@ export interface UserInfo {
   is_active?: boolean;
   email_verified?: boolean;
   auth_provider?: string;
+  organizations?: OrgMembership[];
 }
 
 export interface AuthResponse {
@@ -292,9 +327,12 @@ export interface SearchResult {
   filename: string | null;
   match_type: string;
   match_value: string | null;
+  snippet: string | null;
   classification_label: string | null;
   classification_subcategory_label: string | null;
   status: string | null;
+  pipeline_confidence: number | null;
+  created_at: string | null;
 }
 
 export interface PagedSearch {
@@ -303,6 +341,8 @@ export interface PagedSearch {
   page_size: number;
   results: SearchResult[];
 }
+
+export type SearchScope = 'filename' | 'content' | 'fields' | 'entities';
 
 export interface Dashboard {
   total_documents: number;
@@ -325,6 +365,8 @@ export interface EntityItem {
   entity_type: string;
   created_at: string;
   fields: Record<string, string>;
+  key_fields: Record<string, string>;
+  doc_count: number;
 }
 
 export interface NodeHealth {
@@ -453,6 +495,16 @@ export const api = {
   getMe() {
     return request<UserInfo>('/auth/me');
   },
+  listMyOrganizations() {
+    return request<OrgMembership[]>('/auth/organizations');
+  },
+  switchOrg(org_id: string) {
+    return request<AuthResponse>('/auth/switch-org', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ org_id }),
+    });
+  },
   getAuthProviders() {
     return request<AuthProviders>('/auth/providers');
   },
@@ -550,8 +602,14 @@ export const api = {
   },
 
   // Search
-  search(q: string, page = 1, page_size = 20) {
-    return request<PagedSearch>(`/search?q=${encodeURIComponent(q)}&page=${page}&page_size=${page_size}`);
+  search(q: string, opts: { scope?: string; status?: string; classification?: string; page?: number; page_size?: number } = {}) {
+    const params = new URLSearchParams({ q });
+    if (opts.scope) params.set('scope', opts.scope);
+    if (opts.status) params.set('status', opts.status);
+    if (opts.classification) params.set('classification', opts.classification);
+    if (opts.page) params.set('page', String(opts.page));
+    if (opts.page_size) params.set('page_size', String(opts.page_size));
+    return request<PagedSearch>(`/search?${params.toString()}`);
   },
 
   // Document workflow
@@ -723,6 +781,18 @@ export const api = {
     });
   },
 
+  // Admin — Organizations (list + create)
+  adminListOrganizations() {
+    return request<{ id: string; name: string; created_at: string }[]>('/admin/organizations');
+  },
+  adminCreateOrganization(name: string) {
+    return request<{ status: string; id: string; name: string }>('/admin/organizations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+  },
+
   // Pipeline
   getPipelineHealth() {
     return request<Record<string, NodeHealth>>('/pipeline/health');
@@ -855,5 +925,53 @@ export const api = {
   // ---- Audit Log ----
   getDocumentAuditLog(docId: string, limit = 100) {
     return request<AuditLogEntry[]>(`/documents/${docId}/audit-log?limit=${limit}`);
+  },
+
+  // ---- Org membership management (admin) ----
+  adminListOrgMembers(orgId: string) {
+    return request<OrgMember[]>(`/admin/organizations/${orgId}/members`);
+  },
+  adminAddOrgMember(orgId: string, user_id: string, role: string) {
+    return request<{ status: string }>(`/admin/organizations/${orgId}/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id, role }),
+    });
+  },
+  adminUpdateOrgMember(orgId: string, userId: string, role: string) {
+    return request<{ status: string }>(`/admin/organizations/${orgId}/members/${userId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role }),
+    });
+  },
+  adminRemoveOrgMember(orgId: string, userId: string) {
+    return request<{ status: string }>(`/admin/organizations/${orgId}/members/${userId}`, {
+      method: 'DELETE',
+    });
+  },
+
+  // ---- Org ingestion config (admin) ----
+  adminListIngestionConfigs(orgId: string) {
+    return request<IngestionConfig[]>(`/admin/organizations/${orgId}/ingestion`);
+  },
+  adminCreateIngestionConfig(orgId: string, data: IngestionConfigCreate) {
+    return request<IngestionConfig>(`/admin/organizations/${orgId}/ingestion`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  },
+  adminUpdateIngestionConfig(orgId: string, configId: string, data: Partial<IngestionConfigCreate>) {
+    return request<{ status: string }>(`/admin/organizations/${orgId}/ingestion/${configId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  },
+  adminDeleteIngestionConfig(orgId: string, configId: string) {
+    return request<{ status: string }>(`/admin/organizations/${orgId}/ingestion/${configId}`, {
+      method: 'DELETE',
+    });
   },
 };

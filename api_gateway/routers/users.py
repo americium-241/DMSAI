@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlmodel import select, func
 
-from dmsai_models import Organization, User, SystemConfig, get_session, init_db
+from dmsai_models import Organization, User, UserOrganization, SystemConfig, get_session, init_db
 from auth import (
     hash_password, verify_password, create_access_token,
     get_current_user, require_admin, require_manager,
@@ -50,8 +50,30 @@ class ResendVerificationRequest(BaseModel):
     email: str
 
 
+class SwitchOrgRequest(BaseModel):
+    org_id: str
+
+
+def _get_user_orgs(session, user_id: str) -> list[dict]:
+    """Return all organizations the user belongs to with their per-org role."""
+    memberships = session.exec(
+        select(UserOrganization).where(UserOrganization.user_id == user_id)
+    ).all()
+    result = []
+    for m in memberships:
+        org = session.get(Organization, m.organization_id)
+        if org:
+            result.append({
+                "organization_id": m.organization_id,
+                "organization_name": org.name,
+                "role": m.role,
+                "is_default": m.is_default,
+            })
+    return result
+
+
 def _build_user_response(user_id, user_email, user_full_name, user_role, org_id, org_name,
-                          *, email_verified=True, auth_provider="local"):
+                          *, email_verified=True, auth_provider="local", organizations=None):
     return {
         "id": user_id,
         "email": user_email,
@@ -61,6 +83,7 @@ def _build_user_response(user_id, user_email, user_full_name, user_role, org_id,
         "organization_name": org_name,
         "email_verified": email_verified,
         "auth_provider": auth_provider,
+        "organizations": organizations or [],
     }
 
 
@@ -117,6 +140,23 @@ async def login(body: LoginRequest):
         session.add(u)
         org = session.get(Organization, u.organization_id)
         org_name = org.name if org else None
+        # Ensure UserOrganization row exists (backward compat)
+        membership = session.exec(
+            select(UserOrganization).where(
+                UserOrganization.user_id == u.id,
+                UserOrganization.organization_id == u.organization_id,
+            )
+        ).first()
+        if not membership:
+            session.add(UserOrganization(
+                id=str(uuid.uuid4()),
+                user_id=u.id,
+                organization_id=u.organization_id,
+                role=u.role,
+                is_default=True,
+                joined_at=datetime.utcnow(),
+            ))
+        orgs = _get_user_orgs(session, u.id)
         session.commit()
 
     token = create_access_token(user.id, user.email, user.role, user.organization_id)
@@ -129,6 +169,7 @@ async def login(body: LoginRequest):
             user.organization_id, org_name,
             email_verified=user.email_verified,
             auth_provider=user.auth_provider,
+            organizations=orgs,
         ),
     }
 
@@ -176,6 +217,22 @@ async def _handle_ldap_login(ldap_info):
             session.add(user)
 
         session.flush()
+        # Ensure UserOrganization row exists
+        membership = session.exec(
+            select(UserOrganization).where(
+                UserOrganization.user_id == user.id,
+                UserOrganization.organization_id == user.organization_id,
+            )
+        ).first()
+        if not membership:
+            session.add(UserOrganization(
+                id=str(uuid.uuid4()),
+                user_id=user.id,
+                organization_id=user.organization_id,
+                role=user.role,
+                is_default=True,
+                joined_at=datetime.utcnow(),
+            ))
         org = session.get(Organization, user.organization_id)
         org_name = org.name if org else None
         user_id = user.id
@@ -183,6 +240,7 @@ async def _handle_ldap_login(ldap_info):
         user_full_name = user.full_name
         user_role = user.role
         user_org_id = user.organization_id
+        orgs = _get_user_orgs(session, user.id)
         session.commit()
 
     token = create_access_token(user_id, user_email, user_role, user_org_id)
@@ -193,6 +251,7 @@ async def _handle_ldap_login(ldap_info):
             user_id, user_email, user_full_name, user_role,
             user_org_id, org_name,
             email_verified=True, auth_provider="ldap",
+            organizations=orgs,
         ),
     }
 
@@ -272,11 +331,24 @@ async def register(body: RegisterRequest, request: Request):
             created_at=datetime.utcnow(),
         )
         session.add(user)
+        session.flush()
+        # Create UserOrganization membership
+        session.add(UserOrganization(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            organization_id=org_id,
+            role=role,
+            is_default=True,
+            joined_at=datetime.utcnow(),
+        ))
         user_id = user.id
         user_email = user.email
         user_full_name = user.full_name
         user_role = role
         session.commit()
+
+    new_org_membership = [{"organization_id": org_id, "organization_name": org_name,
+                            "role": user_role, "is_default": True}]
 
     if verification_enabled and not mark_verified:
         base_url = str(request.base_url).rstrip("/")
@@ -286,7 +358,7 @@ async def register(body: RegisterRequest, request: Request):
             "message": "Account created. Please check your email to verify your address.",
             "user": _build_user_response(
                 user_id, user_email, user_full_name, user_role,
-                org_id, org_name, email_verified=False,
+                org_id, org_name, email_verified=False, organizations=new_org_membership,
             ),
         }
 
@@ -296,7 +368,7 @@ async def register(body: RegisterRequest, request: Request):
         "token_type": "bearer",
         "user": _build_user_response(
             user_id, user_email, user_full_name, user_role,
-            org_id, org_name, email_verified=True,
+            org_id, org_name, email_verified=True, organizations=new_org_membership,
         ),
     }
 
@@ -400,6 +472,7 @@ async def get_me(user: User = Depends(get_current_user)):
     with get_session() as session:
         org = session.get(Organization, user.organization_id)
         org_name = org.name if org else None
+        orgs = _get_user_orgs(session, user.id)
     return {
         "id": user.id,
         "email": user.email,
@@ -410,6 +483,45 @@ async def get_me(user: User = Depends(get_current_user)):
         "is_active": user.is_active,
         "email_verified": user.email_verified,
         "auth_provider": user.auth_provider,
+        "organizations": orgs,
+    }
+
+
+@router.get("/auth/organizations")
+async def list_my_organizations(user: User = Depends(get_current_user)):
+    """List all organizations the current user belongs to."""
+    with get_session() as session:
+        return _get_user_orgs(session, user.id)
+
+
+@router.post("/auth/switch-org")
+async def switch_org(body: SwitchOrgRequest, user: User = Depends(get_current_user)):
+    """Issue a new JWT scoped to a different organization the user belongs to."""
+    with get_session() as session:
+        membership = session.exec(
+            select(UserOrganization).where(
+                UserOrganization.user_id == user.id,
+                UserOrganization.organization_id == body.org_id,
+            )
+        ).first()
+        if not membership:
+            raise HTTPException(status_code=403, detail="You are not a member of this organization")
+        org = session.get(Organization, body.org_id)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        orgs = _get_user_orgs(session, user.id)
+
+    token = create_access_token(user.id, user.email, membership.role, body.org_id)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": _build_user_response(
+            user.id, user.email, user.full_name, membership.role,
+            body.org_id, org.name,
+            email_verified=user.email_verified,
+            auth_provider=user.auth_provider,
+            organizations=orgs,
+        ),
     }
 
 
@@ -435,16 +547,25 @@ async def auth_providers():
 
 @router.get("/users")
 async def list_users(current: User = Depends(require_manager)):
+    """List all users who are members of the current active organization."""
     with get_session() as session:
-        users = session.exec(
-            select(User).where(User.organization_id == current.organization_id)
+        # Use UserOrganization so multi-org members are visible in each org they belong to
+        memberships = session.exec(
+            select(UserOrganization).where(
+                UserOrganization.organization_id == current.organization_id
+            )
         ).all()
+        user_ids = [m.user_id for m in memberships]
+        # Build role-in-this-org map from memberships
+        org_role_map = {m.user_id: m.role for m in memberships}
+
+        users = session.exec(select(User).where(User.id.in_(user_ids))).all() if user_ids else []
         return [
             {
                 "id": u.id,
                 "email": u.email,
                 "full_name": u.full_name,
-                "role": u.role,
+                "role": org_role_map.get(u.id, u.role),  # prefer org-specific role
                 "is_active": u.is_active,
                 "auth_provider": u.auth_provider,
                 "email_verified": u.email_verified,
@@ -459,7 +580,16 @@ async def list_users(current: User = Depends(require_manager)):
 async def update_user(user_id: str, body: UserUpdate, current: User = Depends(require_admin)):
     with get_session() as session:
         user = session.get(User, user_id)
-        if not user or user.organization_id != current.organization_id:
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        # Verify the target user is a member of the admin's active org
+        membership = session.exec(
+            select(UserOrganization).where(
+                UserOrganization.user_id == user_id,
+                UserOrganization.organization_id == current.organization_id,
+            )
+        ).first()
+        if not membership:
             raise HTTPException(status_code=404, detail="User not found")
         if body.full_name is not None:
             user.full_name = body.full_name
@@ -471,7 +601,12 @@ async def update_user(user_id: str, body: UserUpdate, current: User = Depends(re
                     status_code=400,
                     detail="You cannot demote your own admin account. Ask another admin to do this.",
                 )
-            user.role = body.role
+            # Update the org-specific role in UserOrganization
+            membership.role = body.role
+            session.add(membership)
+            # Also sync to User.role if this is the user's home org
+            if user.organization_id == current.organization_id:
+                user.role = body.role
         if body.is_active is not None:
             if user_id == current.id and not body.is_active:
                 raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
