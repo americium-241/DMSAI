@@ -27,7 +27,7 @@ if _GW_PATH not in sys.path:
 # ---------------------------------------------------------------------------
 
 from dmsai_models import (
-    Organization, User, Document, get_session, init_db,
+    Organization, User, UserOrganization, Document, get_session, init_db,
 )
 
 
@@ -54,6 +54,14 @@ def _make_test_user(session, org_id: str, role: str = "user") -> tuple[User, str
     )
     session.add(user)
     session.flush()
+    # Create UserOrganization membership so multi-org scope checks pass
+    session.add(UserOrganization(
+        id=str(uuid.uuid4()),
+        user_id=user.id,
+        organization_id=org_id,
+        role=role,
+        is_default=True,
+    ))
     token = create_access_token(user.id, user.email, user.role, user.organization_id)
     return user, token
 

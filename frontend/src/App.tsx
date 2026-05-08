@@ -20,6 +20,7 @@ import QualityMetricsPage from './pages/admin/QualityMetrics';
 import EntityDetailPage from './pages/admin/EntityDetail';
 import ArchiveManagementPage from './pages/admin/ArchiveManagement';
 import EntityDirectoryPage from './pages/EntityDirectory';
+import ActivityPage from './pages/Activity';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -46,6 +47,7 @@ function AppRoutes() {
         <Route path="/documents" element={<DocumentsPage />} />
         <Route path="/documents/:id" element={<DocumentDetailPage />} />
         <Route path="/entities" element={<EntityDirectoryPage />} />
+        <Route path="/activity" element={<ActivityPage />} />
         <Route path="/buckets" element={<UserBucketsPage />} />
         <Route path="/buckets/:id" element={<UserBucketDetailPage />} />
         <Route path="/upload" element={<UploadPage />} />

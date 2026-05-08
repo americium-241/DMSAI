@@ -57,6 +57,9 @@ class Organization(SQLModel, table=True):
     id: str = Field(primary_key=True)
     name: str = Field(index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Per-org retention overrides (None = use global SystemConfig default)
+    archive_retention_days: Optional[int] = Field(default=None)
+    trash_retention_days: Optional[int] = Field(default=None)
 
 
 class UserOrganization(SQLModel, table=True):

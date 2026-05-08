@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Archive, Trash2, RotateCcw, Layers, AlertTriangle, RefreshCw } from 'lucide-react';
-import { api, type ArchivedDocumentSummary, type CompactResult, type PurgeTrashResult } from '../../api';
+import { Archive, Trash2, RotateCcw, Layers, AlertTriangle, RefreshCw, Settings2 } from 'lucide-react';
+import { api, type ArchivedDocumentSummary, type CompactResult, type PurgeTrashResult, type RetentionSettings } from '../../api';
 import Badge from '../../components/Badge';
 import { useToast } from '../../components/Toast';
 
@@ -21,6 +21,11 @@ export default function ArchiveManagement() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const PAGE_SIZE = 30;
 
+  // Retention settings
+  const [retention, setRetention] = useState<RetentionSettings | null>(null);
+  const [retentionEdit, setRetentionEdit] = useState<{ archive: string; trash: string }>({ archive: '', trash: '' });
+  const [savingRetention, setSavingRetention] = useState(false);
+
   const load = async (t = tab, p = page) => {
     setLoading(true);
     try {
@@ -34,7 +39,39 @@ export default function ArchiveManagement() {
     }
   };
 
+  const loadRetention = async () => {
+    try {
+      const r = await api.getRetentionSettings();
+      setRetention(r);
+      setRetentionEdit({
+        archive: r.org_archive_retention_days !== null ? String(r.org_archive_retention_days) : '',
+        trash: r.org_trash_retention_days !== null ? String(r.org_trash_retention_days) : '',
+      });
+    } catch { /* non-fatal */ }
+  };
+
+  const handleSaveRetention = async () => {
+    setSavingRetention(true);
+    try {
+      const payload: { archive_retention_days?: number | null; trash_retention_days?: number | null } = {};
+      payload.archive_retention_days = retentionEdit.archive === '' ? null : parseInt(retentionEdit.archive, 10);
+      payload.trash_retention_days = retentionEdit.trash === '' ? null : parseInt(retentionEdit.trash, 10);
+      if (
+        (payload.archive_retention_days !== null && isNaN(payload.archive_retention_days)) ||
+        (payload.trash_retention_days !== null && isNaN(payload.trash_retention_days))
+      ) {
+        show('Please enter valid numbers', 'error');
+        return;
+      }
+      await api.updateRetentionSettings(payload);
+      show('Retention settings saved', 'success');
+      loadRetention();
+    } catch (e) { show(String(e), 'error'); }
+    finally { setSavingRetention(false); }
+  };
+
   useEffect(() => { load(tab, 1); setPage(1); }, [tab]);
+  useEffect(() => { loadRetention(); }, []);
 
   const handleCompact = async () => {
     setCompacting(true);
@@ -94,6 +131,92 @@ export default function ArchiveManagement() {
       <div>
         <h1 className="text-2xl font-bold text-white">Archive & Trash</h1>
         <p className="text-sm text-gray-500 mt-1">Manage archived and trashed documents, run storage compaction, and permanently delete trashed items.</p>
+      </div>
+
+      {/* Retention settings */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Settings2 size={16} className="text-purple-400" />
+          <h3 className="text-sm font-semibold text-white">Retention Periods</h3>
+          <span className="ml-auto text-xs text-gray-600">Organisation override — leave blank to use global default</span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="space-y-1.5">
+            <label className="text-xs text-gray-400 flex justify-between">
+              <span>Archive compression after (days)</span>
+              {retention && (
+                <span className="text-gray-600">
+                  global: {retention.global_archive_retention_days}d
+                  {retention.org_archive_retention_days !== null && (
+                    <span className="text-purple-400 ml-1">→ org: {retention.org_archive_retention_days}d</span>
+                  )}
+                </span>
+              )}
+            </label>
+            <input
+              type="number" min={0}
+              value={retentionEdit.archive}
+              onChange={e => setRetentionEdit(v => ({ ...v, archive: e.target.value }))}
+              placeholder={retention ? `Default: ${retention.global_archive_retention_days}` : '90'}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-purple-500 placeholder-gray-600"
+            />
+            {retention && (
+              <p className="text-xs text-gray-600">
+                Effective: <span className="text-white">{retention.effective_archive_retention_days} days</span>
+                {retention.effective_archive_retention_days === 0 && <span className="text-yellow-500 ml-1">(disabled)</span>}
+              </p>
+            )}
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs text-gray-400 flex justify-between">
+              <span>Trash auto-purge after (days)</span>
+              {retention && (
+                <span className="text-gray-600">
+                  global: {retention.global_trash_retention_days}d
+                  {retention.org_trash_retention_days !== null && (
+                    <span className="text-purple-400 ml-1">→ org: {retention.org_trash_retention_days}d</span>
+                  )}
+                </span>
+              )}
+            </label>
+            <input
+              type="number" min={0}
+              value={retentionEdit.trash}
+              onChange={e => setRetentionEdit(v => ({ ...v, trash: e.target.value }))}
+              placeholder={retention ? `Default: ${retention.global_trash_retention_days}` : '30'}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-purple-500 placeholder-gray-600"
+            />
+            {retention && (
+              <p className="text-xs text-gray-600">
+                Effective: <span className="text-white">{retention.effective_trash_retention_days} days</span>
+                {retention.effective_trash_retention_days === 0 && <span className="text-yellow-500 ml-1">(disabled)</span>}
+              </p>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleSaveRetention}
+            disabled={savingRetention}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600/20 text-purple-400 text-sm hover:bg-purple-600/30 disabled:opacity-50"
+          >
+            <Settings2 size={14} />
+            {savingRetention ? 'Saving…' : 'Save retention settings'}
+          </button>
+          {(retentionEdit.archive !== '' || retentionEdit.trash !== '') && (
+            <button
+              onClick={() => {
+                setRetentionEdit({ archive: '', trash: '' });
+                api.updateRetentionSettings({ archive_retention_days: null, trash_retention_days: null })
+                  .then(() => { show('Reverted to global defaults', 'success'); loadRetention(); })
+                  .catch(e => show(String(e), 'error'));
+              }}
+              className="text-xs text-gray-500 hover:text-gray-300 underline"
+            >
+              Revert to global defaults
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Action cards */}

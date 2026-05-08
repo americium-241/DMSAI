@@ -18,7 +18,7 @@ if _GW_PATH not in sys.path:
     sys.path.insert(0, _GW_PATH)
 
 from fastapi.testclient import TestClient
-from dmsai_models import User, Organization, get_session, init_db
+from dmsai_models import User, Organization, UserOrganization, get_session, init_db
 
 
 @pytest.fixture(scope="module")
@@ -70,8 +70,9 @@ def _bootstrap_admin(client) -> dict:
             org = Organization(id=str(uuid.uuid4()), name=org_name)
             session.add(org)
             session.flush()
+            user_id = str(uuid.uuid4())
             user = User(
-                id=str(uuid.uuid4()),
+                id=user_id,
                 email=email,
                 password_hash=hash_password("AdminPass1"),
                 full_name="Bootstrap Admin",
@@ -82,6 +83,14 @@ def _bootstrap_admin(client) -> dict:
                 email_verified=True,
             )
             session.add(user)
+            # Create UserOrganization membership so multi-org scope checks pass
+            session.add(UserOrganization(
+                id=str(uuid.uuid4()),
+                user_id=user_id,
+                organization_id=org.id,
+                role="admin",
+                is_default=True,
+            ))
             session.commit()
             token = create_access_token(user.id, user.email, user.role, user.organization_id)
             return {"token": token, "org_id": org.id, "email": email}

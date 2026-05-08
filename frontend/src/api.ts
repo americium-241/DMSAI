@@ -259,6 +259,15 @@ export interface PurgeTrashResult {
   candidates: { id: string; filename: string; trashed_at: string }[];
 }
 
+export interface RetentionSettings {
+  global_archive_retention_days: number;
+  global_trash_retention_days: number;
+  org_archive_retention_days: number | null;
+  org_trash_retention_days: number | null;
+  effective_archive_retention_days: number;
+  effective_trash_retention_days: number;
+}
+
 export interface SystemConfigItem {
   key: string;
   value: string;
@@ -344,6 +353,17 @@ export interface PagedSearch {
 
 export type SearchScope = 'filename' | 'content' | 'fields' | 'entities';
 
+export interface DailyCount { date: string; count: number; }
+export interface AuditFeedItem {
+  id: string;
+  document_id: string;
+  filename: string | null;
+  action: string;
+  details: string | null;
+  actor: string | null;
+  created_at: string;
+}
+
 export interface Dashboard {
   total_documents: number;
   processing_documents: number;
@@ -352,10 +372,23 @@ export interface Dashboard {
   closed_documents: number;
   pending_documents: number;
   my_locked_documents: number;
+  // Charts
+  daily_counts: DailyCount[];
+  status_breakdown: { completed: number; processing: number; failed: number };
+  confidence_buckets: { low: number; medium: number; good: number; high: number };
+  top_classifications: { label: string; count: number }[];
+  top_entities: { id: string; name: string; entity_type: string; doc_count: number }[];
+  // Lists
+  bucket_summaries: BucketSummary[];
+  recent_audit: AuditFeedItem[];
+  recent_documents: {
+    id: string; filename: string; status: string;
+    classification_label: string | null; classification_subcategory_label: string | null;
+    pipeline_confidence: number | null; created_at: string;
+  }[];
+  // Legacy (kept for backwards compat)
   classification_distribution: Record<string, number>;
   classification_subcategory_distribution: Record<string, number>;
-  bucket_summaries: BucketSummary[];
-  recent_documents: { id: string; filename: string; status: string; classification_label: string | null; classification_subcategory_label: string | null; created_at: string }[];
 }
 
 export interface EntityItem {
@@ -825,6 +858,16 @@ export const api = {
   getRecentActivity(limit = 30) {
     return request<{ items: ActivityItem[] }>(`/activity/recent?limit=${limit}`);
   },
+  getActivity(params?: { page?: number; page_size?: number; action?: string; document_id?: string }) {
+    const p = new URLSearchParams();
+    if (params?.page) p.set('page', String(params.page));
+    if (params?.page_size) p.set('page_size', String(params.page_size));
+    if (params?.action) p.set('action', params.action);
+    if (params?.document_id) p.set('document_id', params.document_id);
+    return request<{ total: number; page: number; page_size: number; items: AuditFeedItem[]; action_types: string[] }>(
+      `/activity?${p.toString()}`
+    );
+  },
 
   // Document buckets (manual assignment)
   getDocumentBuckets(docId: string) {
@@ -912,6 +955,16 @@ export const api = {
   },
   purgeTrashCandidates() {
     return request<PurgeTrashResult>('/admin/storage/purge-trash', { method: 'POST' });
+  },
+  getRetentionSettings() {
+    return request<RetentionSettings>('/admin/archive/retention');
+  },
+  updateRetentionSettings(data: { archive_retention_days?: number | null; trash_retention_days?: number | null }) {
+    return request<RetentionSettings & { status: string }>('/admin/archive/retention', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
   },
 
   // ---- Versions ----

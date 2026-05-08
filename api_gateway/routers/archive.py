@@ -16,7 +16,7 @@ from sqlmodel import select
 from dmsai_models import (
     Document, DocumentField, DocumentEntity, Entity,
     DocumentAuditLog, DocumentVersion, DocumentComment, EntityComment,
-    Correction, BucketDocument, User, SystemConfig,
+    Correction, BucketDocument, User, SystemConfig, Organization,
     get_session, init_db,
 )
 from auth import get_current_user
@@ -357,7 +357,9 @@ async def compact_storage(user: User = Depends(get_current_user)):
     already_done = []
     skipped = []
     with get_session() as session:
-        retention_days = int(_get_config(session, "archive_retention_days", "90"))
+        org = session.get(Organization, user.organization_id)
+        global_retention = int(_get_config(session, "archive_retention_days", "90"))
+        retention_days = org.archive_retention_days if (org and org.archive_retention_days is not None) else global_retention
         enabled = _get_config(session, "archive_compression_enabled", "true").lower() == "true"
         if not enabled or retention_days <= 0:
             return {"status": "disabled", "compressed": [], "skipped": []}
@@ -407,7 +409,9 @@ async def purge_old_trash(user: User = Depends(get_current_user)):
     if user.role not in ("admin", "manager"):
         raise HTTPException(status_code=403, detail="Admin only")
     with get_session() as session:
-        trash_days = int(_get_config(session, "trash_retention_days", "30"))
+        org = session.get(Organization, user.organization_id)
+        global_trash_days = int(_get_config(session, "trash_retention_days", "30"))
+        trash_days = org.trash_retention_days if (org and org.trash_retention_days is not None) else global_trash_days
         if trash_days <= 0:
             return {"status": "disabled", "candidates": []}
         cutoff = datetime.utcnow() - timedelta(days=trash_days)
@@ -424,4 +428,76 @@ async def purge_old_trash(user: User = Depends(get_current_user)):
                 {"id": d.id, "filename": d.filename, "trashed_at": str(d.trashed_at)}
                 for d in old_trash
             ],
+        }
+
+
+# ---------------------------------------------------------------------------
+# Retention settings (per-org overrides)
+# ---------------------------------------------------------------------------
+
+class RetentionUpdate(BaseModel):
+    archive_retention_days: Optional[int] = None
+    trash_retention_days: Optional[int] = None
+
+
+@router.get("/admin/archive/retention")
+async def get_retention_settings(user: User = Depends(get_current_user)):
+    """Return effective retention settings for the current organisation.
+
+    Returns both the global defaults (from SystemConfig) and any org-level
+    overrides.  The ``effective_*`` fields show what the system will actually
+    use.
+    """
+    if user.role not in ("admin", "manager"):
+        raise HTTPException(status_code=403, detail="Admin only")
+    init_db()
+    with get_session() as session:
+        org = session.get(Organization, user.organization_id)
+        global_archive = int(_get_config(session, "archive_retention_days", "90"))
+        global_trash = int(_get_config(session, "trash_retention_days", "30"))
+        org_archive = org.archive_retention_days if org else None
+        org_trash = org.trash_retention_days if org else None
+        return {
+            "global_archive_retention_days": global_archive,
+            "global_trash_retention_days": global_trash,
+            "org_archive_retention_days": org_archive,
+            "org_trash_retention_days": org_trash,
+            "effective_archive_retention_days": org_archive if org_archive is not None else global_archive,
+            "effective_trash_retention_days": org_trash if org_trash is not None else global_trash,
+        }
+
+
+@router.patch("/admin/archive/retention")
+async def update_retention_settings(body: RetentionUpdate, user: User = Depends(get_current_user)):
+    """Update the per-org retention overrides for the current organisation.
+
+    Pass ``null`` / omit a field to revert to the global default.
+    Values must be positive integers or 0 (0 = disabled).
+    """
+    if user.role not in ("admin", "manager"):
+        raise HTTPException(status_code=403, detail="Admin only")
+    if body.archive_retention_days is not None and body.archive_retention_days < 0:
+        raise HTTPException(status_code=400, detail="archive_retention_days must be >= 0")
+    if body.trash_retention_days is not None and body.trash_retention_days < 0:
+        raise HTTPException(status_code=400, detail="trash_retention_days must be >= 0")
+    init_db()
+    with get_session() as session:
+        org = session.get(Organization, user.organization_id)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        if "archive_retention_days" in body.model_fields_set:
+            org.archive_retention_days = body.archive_retention_days
+        if "trash_retention_days" in body.model_fields_set:
+            org.trash_retention_days = body.trash_retention_days
+        session.add(org)
+        session.commit()
+        session.refresh(org)
+        global_archive = int(_get_config(session, "archive_retention_days", "90"))
+        global_trash = int(_get_config(session, "trash_retention_days", "30"))
+        return {
+            "status": "updated",
+            "org_archive_retention_days": org.archive_retention_days,
+            "org_trash_retention_days": org.trash_retention_days,
+            "effective_archive_retention_days": org.archive_retention_days if org.archive_retention_days is not None else global_archive,
+            "effective_trash_retention_days": org.trash_retention_days if org.trash_retention_days is not None else global_trash,
         }

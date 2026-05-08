@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 
 from dmsai_models import (
     Document, DocumentField, DocumentEntity, Entity,
+    Organization, User, UserOrganization,
     get_session, init_db,
 )
 
@@ -44,16 +45,35 @@ def client():
 
 @pytest.fixture(scope="module")
 def auth_token(client) -> str:
-    """Register and return a JWT token for this test module."""
+    """Create a user directly in DB and return a JWT — avoids registration endpoint state issues."""
+    import sys
+    from pathlib import Path
+    _gw = str(Path(__file__).resolve().parent.parent.parent / "api_gateway")
+    if _gw not in sys.path:
+        sys.path.insert(0, _gw)
+    from auth import hash_password, create_access_token
+
+    init_db()
+    org_id = str(uuid.uuid4())
+    user_id = str(uuid.uuid4())
     email = f"doc-flow-{uuid.uuid4().hex[:8]}@test.com"
-    resp = client.post("/api/auth/register", json={
-        "email": email,
-        "password": "FlowTest1",
-        "full_name": "Doc Flow User",
-        "organization_name": f"FlowOrg-{uuid.uuid4().hex[:6]}",
-    })
-    assert resp.status_code == 200
-    return resp.json()["access_token"]
+    with get_session() as session:
+        org = Organization(id=org_id, name=f"FlowOrg-{uuid.uuid4().hex[:6]}")
+        session.add(org)
+        user = User(
+            id=user_id, email=email,
+            password_hash=hash_password("FlowTest1"),
+            full_name="Doc Flow User", role="user",
+            organization_id=org_id, is_active=True,
+            auth_provider="local", email_verified=True,
+        )
+        session.add(user)
+        session.add(UserOrganization(
+            id=str(uuid.uuid4()), user_id=user_id,
+            organization_id=org_id, role="user", is_default=True,
+        ))
+        session.commit()
+    return create_access_token(user_id, email, "user", org_id)
 
 
 @pytest.fixture

@@ -29,9 +29,10 @@ class TestAdminEntities:
         resp = gw_client.get("/api/admin/entities", headers=admin_headers)
         assert resp.status_code == 200
 
-    def test_list_entities_regular_user_forbidden(self, gw_client, user_headers):
+    def test_list_entities_regular_user_accessible(self, gw_client, user_headers):
+        """Entity listing is read-only and accessible to all authenticated users."""
         resp = gw_client.get("/api/admin/entities", headers=user_headers)
-        assert resp.status_code == 403
+        assert resp.status_code == 200
 
     def test_entities_list_shape(self, gw_client, admin_headers):
         _create_entity("AdminTestCo")

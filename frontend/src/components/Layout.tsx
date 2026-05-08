@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Upload, Archive, Activity,
   Users, LogOut, ChevronDown, Building2, Sliders, Search,
-  LineChart, Brain, Inbox, Check, Network,
+  LineChart, Brain, Inbox, Check, Network, History,
 } from 'lucide-react';
 import { useAuth } from '../auth';
 import { useState } from 'react';
@@ -13,6 +13,7 @@ const USER_NAV = [
   { to: '/upload', icon: Upload, label: 'Upload' },
   { to: '/documents', icon: Search, label: 'Search' },
   { to: '/entities', icon: Network, label: 'Entities' },
+  { to: '/activity', icon: History, label: 'Activity' },
 ];
 
 const ADMIN_NAV = [

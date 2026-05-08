@@ -61,6 +61,9 @@ def _migrate_sqlite_schema(engine) -> None:
     _sqlite_add_column_if_missing(engine, "user", "failed_login_attempts", "INTEGER DEFAULT 0")
     _sqlite_add_column_if_missing(engine, "user", "locked_until", "TIMESTAMP")
     _sqlite_add_column_if_missing(engine, "entity", "organization_id", "TEXT")
+    # Per-org retention overrides
+    _sqlite_add_column_if_missing(engine, "organization", "archive_retention_days", "INTEGER")
+    _sqlite_add_column_if_missing(engine, "organization", "trash_retention_days", "INTEGER")
 
 
 def _seed_entity_canonical_fields(engine) -> None:
