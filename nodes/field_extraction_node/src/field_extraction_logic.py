@@ -428,7 +428,20 @@ async def process_field_extraction(payload: dict) -> dict:
 
     if not ocr_text:
         logger.warning(f"[{doc_id}] No OCR text, skipping field extraction")
+        # Still mark the document COMPLETED — field extraction is the terminal
+        # node and the document must not stay stuck in an intermediate status.
+        if doc_id:
+            init_db()
+            with get_session() as session:
+                doc = session.get(Document, doc_id)
+                if doc:
+                    doc.status = "COMPLETED"
+                    doc.processed_at = datetime.utcnow()
+                    doc.updated_at = datetime.utcnow()
+                    session.add(doc)
+                session.commit()
         payload["extracted_fields"] = []
+        payload["pipeline_confidence"] = 0.0
         payload["history"] = payload.get("history", []) + ["field_extraction_skipped"]
         if doc_id:
             record_pipeline_event(doc_id, "field_extraction", "completed", details="skipped_no_ocr")

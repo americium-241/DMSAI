@@ -26,9 +26,15 @@ interface StepState {
   llmProvider: LLMProvider;
   ollamaUrl: string;
   ollamaModel: string;
+  ollamaVisionModel: string;
   litellmUrl: string;
   litellmApiKey: string;
   litellmModel: string;
+  litellmVisionModel: string;
+
+  // Step 2 — Embedding (optional)
+  embeddingEnabled: boolean;
+  embeddingModel: string;
 
   // Step 3 — Ingestion
   ingestionType: IngestionType;
@@ -43,8 +49,9 @@ interface StepState {
 const INITIAL: StepState = {
   orgName: '', fullName: '', email: '', password: '', confirmPassword: '',
   llmProvider: 'ollama',
-  ollamaUrl: 'http://localhost:11434', ollamaModel: 'gemma3:27b',
-  litellmUrl: 'http://localhost:4000', litellmApiKey: '', litellmModel: '',
+  ollamaUrl: 'http://localhost:11434', ollamaModel: 'gemma3:27b', ollamaVisionModel: '',
+  litellmUrl: 'http://localhost:4000', litellmApiKey: '', litellmModel: '', litellmVisionModel: '',
+  embeddingEnabled: false, embeddingModel: 'nomic-embed-text',
   ingestionType: 'skip',
   directoryPath: '', imapHost: '', imapPort: '993',
   imapUser: '', imapPassword: '', imapFolder: 'INBOX',
@@ -246,14 +253,21 @@ function Step2({
       await api.updateSystemConfig('llm_provider', 'ollama');
       await api.updateSystemConfig('ollama_base_url', state.ollamaUrl);
       await api.updateSystemConfig('llm_model', state.ollamaModel);
+      if (state.ollamaVisionModel)
+        await api.updateSystemConfig('ocr_vision_model', state.ollamaVisionModel);
     } else {
       await api.updateSystemConfig('llm_provider', 'litellm');
       await api.updateSystemConfig('litellm_base_url', state.litellmUrl);
       await api.updateSystemConfig('litellm_api_key', state.litellmApiKey);
-      if (state.litellmModel) {
+      if (state.litellmModel)
         await api.updateSystemConfig('litellm_model', state.litellmModel);
-      }
+      if (state.litellmVisionModel)
+        await api.updateSystemConfig('ocr_vision_model', state.litellmVisionModel);
     }
+    // Embedding
+    await api.updateSystemConfig('embedding_enabled', state.embeddingEnabled ? 'true' : 'false');
+    if (state.embeddingEnabled)
+      await api.updateSystemConfig('embedding_model', state.embeddingModel);
   };
 
   const handleTest = async () => {
@@ -322,18 +336,34 @@ function Step2({
             <p className="mt-1 text-xs text-gray-500">The URL where your Ollama server is running.</p>
           </div>
           <div>
-            <Label>Model Name</Label>
+            <Label>Text Model</Label>
             <Input
               type="text" value={state.ollamaModel} onChange={set('ollamaModel')}
               placeholder="gemma3:27b"
             />
             <p className="mt-1 text-xs text-gray-500">
-              Run <code className="text-gray-400 bg-gray-800 px-1 rounded">ollama pull gemma3:27b</code> first if you haven't already.
+              Used for entity extraction, classification, and field extraction.
+              Run <code className="text-gray-400 bg-gray-800 px-1 rounded">ollama pull gemma3:27b</code> first.
+            </p>
+          </div>
+          <div>
+            <Label>Vision Model for OCR <span className="text-gray-600">(optional — leave empty to use Text Model)</span></Label>
+            <Input
+              type="text" value={state.ollamaVisionModel} onChange={set('ollamaVisionModel')}
+              placeholder="e.g. llava:13b or minicpm-v"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              Only needed if your text model is not vision-capable. Multimodal models like gemma3 work as-is.
             </p>
           </div>
         </>
       ) : (
         <>
+          <div className="px-4 py-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30 text-yellow-300 text-xs">
+            <strong>Important:</strong> The LiteLLM proxy must have the provider API key configured
+            (e.g. <code className="bg-gray-900 px-1 rounded">GEMINI_API_KEY</code> env var in its config).
+            The key below is only used to authenticate <em>your app</em> to the proxy.
+          </div>
           <div>
             <Label>LiteLLM Proxy URL</Label>
             <Input
@@ -342,24 +372,70 @@ function Step2({
             />
           </div>
           <div>
-            <Label>API Key</Label>
+            <Label>Proxy API Key <span className="text-gray-600">(optional — depends on your proxy config)</span></Label>
             <Input
               type="password" value={state.litellmApiKey} onChange={set('litellmApiKey')}
-              placeholder="sk-… or your provider key"
+              placeholder="sk-… or leave empty if proxy has no auth"
             />
           </div>
           <div>
-            <Label>Model Identifier (optional)</Label>
+            <Label>Text Model Identifier</Label>
             <Input
               type="text" value={state.litellmModel} onChange={set('litellmModel')}
-              placeholder="gemini/gemini-1.5-pro"
+              placeholder="gemini/gemini-2.0-flash or openai/gpt-4o"
             />
             <p className="mt-1 text-xs text-gray-500">
-              Leave empty to use the LiteLLM proxy default. See LiteLLM docs for provider/model strings.
+              Format: <code className="bg-gray-800 px-1 rounded">provider/model-name</code>. See LiteLLM docs.
             </p>
+          </div>
+          <div>
+            <Label>Vision Model for OCR <span className="text-gray-600">(optional — leave empty to use Text Model)</span></Label>
+            <Input
+              type="text" value={state.litellmVisionModel} onChange={set('litellmVisionModel')}
+              placeholder="e.g. gemini/gemini-2.0-flash or openai/gpt-4o"
+            />
           </div>
         </>
       )}
+
+      {/* Embedding (optional, collapsed by default) */}
+      <details className="group">
+        <summary className="cursor-pointer text-sm text-gray-400 hover:text-gray-300 select-none list-none flex items-center gap-2 py-1">
+          <span className="text-gray-600 group-open:rotate-90 transition-transform inline-block">▶</span>
+          Embedding Model <span className="text-gray-600">(optional — improves entity resolution accuracy)</span>
+        </summary>
+        <div className="mt-3 space-y-3 pl-4 border-l border-gray-700">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setState({ ...state, embeddingEnabled: !state.embeddingEnabled })}
+              className={cls(
+                'relative w-10 h-5 rounded-full transition-colors',
+                state.embeddingEnabled ? 'bg-blue-600' : 'bg-gray-700',
+              )}
+            >
+              <span className={cls(
+                'absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform',
+                state.embeddingEnabled ? 'translate-x-5' : 'translate-x-0.5',
+              )} />
+            </button>
+            <span className="text-sm text-gray-400">Enable embedding-based entity pre-filtering</span>
+          </div>
+          {state.embeddingEnabled && (
+            <div>
+              <Label>Embedding Model</Label>
+              <Input
+                type="text" value={state.embeddingModel}
+                onChange={e => setState({ ...state, embeddingModel: e.target.value })}
+                placeholder="nomic-embed-text (Ollama) or text-embedding-3-small (OpenAI)"
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Uses the same provider as the text model. Ollama: <code className="bg-gray-800 px-1 rounded">ollama pull nomic-embed-text</code>
+              </p>
+            </div>
+          )}
+        </div>
+      </details>
 
       {/* Test connection */}
       <div className="flex items-center gap-3">
