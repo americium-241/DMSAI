@@ -13,7 +13,7 @@ from sqlmodel import select, func
 from dmsai_models import (
     Bucket, BucketRule, BucketDocument, BucketPermission,
     Document, DocumentField, DocumentEntity, Entity, EntityField,
-    SystemConfig, User, get_session, init_db,
+    SystemConfig, User, UserOrganization, get_session, init_db,
 )
 from auth import get_current_user, require_manager
 
@@ -417,7 +417,16 @@ async def create_permission(bucket_id: str, body: PermissionCreate, user: User =
     with get_session() as session:
         _user_can_access_bucket(session, bucket_id, user, "admin")
         target_user = session.get(User, body.user_id)
-        if not target_user or target_user.organization_id != user.organization_id:
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found in your organization")
+        # Verify the target user is a member of the active org (handles multi-org members)
+        member = session.exec(
+            select(UserOrganization).where(
+                UserOrganization.user_id == body.user_id,
+                UserOrganization.organization_id == user.organization_id,
+            )
+        ).first()
+        if not member:
             raise HTTPException(status_code=404, detail="User not found in your organization")
         existing = session.exec(
             select(BucketPermission).where(
