@@ -362,7 +362,8 @@ async def compact_storage(user: User = Depends(get_current_user)):
         retention_days = org.archive_retention_days if (org and org.archive_retention_days is not None) else global_retention
         enabled = _get_config(session, "archive_compression_enabled", "true").lower() == "true"
         if not enabled or retention_days <= 0:
-            return {"status": "disabled", "compressed": [], "skipped": []}
+            return {"status": "disabled", "compressed": [], "already_done": [], "skipped": [],
+                    "retention_days": retention_days, "cutoff": None}
 
         cutoff = datetime.utcnow() - timedelta(days=retention_days)
         archived_docs = session.exec(
@@ -399,7 +400,14 @@ async def compact_storage(user: User = Depends(get_current_user)):
 
         session.commit()
 
-    return {"status": "ok", "compressed": compressed, "already_done": already_done, "skipped": skipped}
+    return {
+        "status": "ok",
+        "retention_days": retention_days,
+        "cutoff": cutoff.isoformat(),
+        "compressed": compressed,
+        "already_done": already_done,
+        "skipped": skipped,
+    }
 
 
 @router.post("/admin/storage/purge-trash")
@@ -413,7 +421,7 @@ async def purge_old_trash(user: User = Depends(get_current_user)):
         global_trash_days = int(_get_config(session, "trash_retention_days", "30"))
         trash_days = org.trash_retention_days if (org and org.trash_retention_days is not None) else global_trash_days
         if trash_days <= 0:
-            return {"status": "disabled", "candidates": []}
+            return {"status": "disabled", "trash_retention_days": trash_days, "cutoff": None, "candidates": []}
         cutoff = datetime.utcnow() - timedelta(days=trash_days)
         old_trash = session.exec(
             select(Document)
@@ -424,6 +432,7 @@ async def purge_old_trash(user: User = Depends(get_current_user)):
         return {
             "status": "ok",
             "trash_retention_days": trash_days,
+            "cutoff": cutoff.isoformat(),
             "candidates": [
                 {"id": d.id, "filename": d.filename, "trashed_at": str(d.trashed_at)}
                 for d in old_trash
@@ -485,10 +494,8 @@ async def update_retention_settings(body: RetentionUpdate, user: User = Depends(
         org = session.get(Organization, user.organization_id)
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")
-        if "archive_retention_days" in body.model_fields_set:
-            org.archive_retention_days = body.archive_retention_days
-        if "trash_retention_days" in body.model_fields_set:
-            org.trash_retention_days = body.trash_retention_days
+        org.archive_retention_days = body.archive_retention_days
+        org.trash_retention_days = body.trash_retention_days
         session.add(org)
         session.commit()
         session.refresh(org)

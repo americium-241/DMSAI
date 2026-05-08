@@ -40,9 +40,9 @@ def _truncate_text(text: str, max_chars: int = 8000) -> str:
     return text[:max_chars] + "\n...[truncated]"
 
 
-async def _call_llm(prompt: str) -> str:
+async def _call_llm(prompt: str, document_id: str | None = None) -> str:
     from dmsai_models.llm import call_llm
-    return await call_llm(prompt)
+    return await call_llm(prompt, stage="entity_extraction", document_id=document_id)
 
 
 def _config_value(key: str, default: str) -> str:
@@ -143,7 +143,7 @@ async def process_entity_extraction(payload: dict) -> dict:
     ocr_confidence = payload.get("ocr_confidence")
 
     logger.info(f"[{doc_id}] Calling LLM for entity extraction")
-    raw_response = await _call_llm(prompt)
+    raw_response = await _call_llm(prompt, document_id=doc_id)
     entities = _parse_entities_json(raw_response)
 
     confidences: list[float] = []

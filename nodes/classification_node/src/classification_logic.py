@@ -90,9 +90,13 @@ Respond with ONLY a valid JSON object:
 # LLM helpers
 # ---------------------------------------------------------------------------
 
-async def _call_llm(prompt: str, json_format: bool = False) -> str:
+async def _call_llm(
+    prompt: str,
+    json_format: bool = False,
+    document_id: str | None = None,
+) -> str:
     from dmsai_models.llm import call_llm
-    return await call_llm(prompt, json_format=json_format)
+    return await call_llm(prompt, json_format=json_format, stage="classification", document_id=document_id)
 
 
 def _config_value(key: str, default: str) -> str:

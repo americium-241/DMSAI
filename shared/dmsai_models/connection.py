@@ -37,6 +37,16 @@ def _sqlite_add_column_if_missing(engine, table: str, column: str, ddl: str) -> 
         conn.commit()
 
 
+def _sqlite_create_index_if_missing(engine, index_name: str, ddl: str) -> None:
+    """Best-effort CREATE INDEX IF NOT EXISTS for existing SQLite databases."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(f"CREATE INDEX IF NOT EXISTS {index_name} {ddl}"))
+            conn.commit()
+    except Exception:
+        pass
+
+
 def _migrate_sqlite_schema(engine) -> None:
     if not str(engine.url).startswith("sqlite"):
         return
@@ -64,6 +74,34 @@ def _migrate_sqlite_schema(engine) -> None:
     # Per-org retention overrides
     _sqlite_add_column_if_missing(engine, "organization", "archive_retention_days", "INTEGER")
     _sqlite_add_column_if_missing(engine, "organization", "trash_retention_days", "INTEGER")
+
+    # ---------------------------------------------------------------------------
+    # Composite indexes — applied idempotently to existing databases
+    # ---------------------------------------------------------------------------
+    # Document list: covers org + lifecycle filters + ordering in one index scan
+    _sqlite_create_index_if_missing(
+        engine,
+        "idx_doc_org_created",
+        "ON document(organization_id, created_at DESC)",
+    )
+    # Entity resolution: covers WHERE entity_type IN (...) AND organization_id = ?
+    _sqlite_create_index_if_missing(
+        engine,
+        "idx_entity_type_org",
+        "ON entity(entity_type, organization_id)",
+    )
+    # EntityField bulk load: covers WHERE entity_id IN (...) with field_name projection
+    _sqlite_create_index_if_missing(
+        engine,
+        "idx_ef_entity_fname",
+        "ON entityfield(entity_id, field_name)",
+    )
+    # DocumentEntity: covers entity_id filter in document listing
+    _sqlite_create_index_if_missing(
+        engine,
+        "idx_de_entity_doc",
+        "ON documententity(entity_id, document_id)",
+    )
 
 
 def _seed_entity_canonical_fields(engine) -> None:
@@ -362,6 +400,10 @@ Respond with ONLY a valid JSON object:
         ("ingestion_email_folder", "INBOX", "ingestion", "Mailbox folder to monitor for new messages"),
         ("ingestion_email_poll_interval_seconds", "60", "ingestion", "Seconds between mailbox polls"),
         ("ingestion_email_mark_seen", "true", "ingestion", "Mark processed emails as seen (\\Seen flag)"),
+        # Embedding
+        ("embedding_enabled", "false", "embedding", "Enable semantic embedding for documents and entities (requires an embedding model)"),
+        ("embedding_provider", "", "embedding", "Embedding provider: 'ollama' or 'litellm' (empty = use llm_provider)"),
+        ("embedding_model", "nomic-embed-text", "embedding", "Embedding model name (e.g. nomic-embed-text for Ollama, text-embedding-3-small for LiteLLM/OpenAI)"),
     ]
     with Session(engine) as session:
         for key, value, category, description in defaults:

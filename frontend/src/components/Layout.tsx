@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Upload, Archive, Activity,
+  LayoutDashboard, Upload, Archive,
   Users, LogOut, ChevronDown, Building2, Sliders, Search,
   LineChart, Brain, Inbox, Check, Network, History,
 } from 'lucide-react';
@@ -22,8 +22,7 @@ const ADMIN_NAV = [
   { to: '/admin/buckets', icon: Archive, label: 'Bucket Management' },
   { to: '/admin/llm-settings', icon: Brain, label: 'LLM Settings' },
   { to: '/admin/general-settings', icon: Sliders, label: 'General Settings' },
-  { to: '/admin/pipeline', icon: Activity, label: 'Pipeline' },
-  { to: '/admin/quality-metrics', icon: LineChart, label: 'Quality Metrics' },
+  { to: '/admin/metrics', icon: LineChart, label: 'System Metrics' },
   { to: '/admin/archive', icon: Inbox, label: 'Archive & Trash' },
 ];
 

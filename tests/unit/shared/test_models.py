@@ -13,7 +13,7 @@ from dmsai_models import (
     Document, Organization, User, Bucket, BucketRule, BucketDocument,
     BucketPermission, Entity, EntityField, DocumentEntity, DocumentField,
     CanonicalField, CanonicalDocumentClass, DocumentComment, PipelineEvent,
-    SystemConfig, Correction, DocumentAuditLog, DocumentVersion,
+    SystemConfig, Correction, DocumentAuditLog, DocumentVersion, LLMUsage,
     get_session, init_db,
 )
 
@@ -263,3 +263,68 @@ class TestObservabilityModels:
         )
         assert ver.summary == ""
         assert ver.snapshot_json is None
+
+
+# ---------------------------------------------------------------------------
+# LLMUsage model
+# ---------------------------------------------------------------------------
+
+class TestLLMUsage:
+    def test_defaults(self):
+        row = LLMUsage(
+            id=_uuid(), provider="ollama", model="gemma3:27b",
+            prompt_tokens=100, completion_tokens=50,
+        )
+        assert row.stage == "unknown"
+        assert row.call_type == "text"
+        assert row.total_tokens == 0  # total_tokens has default=0; caller sets it
+        assert row.document_id is None
+
+    def test_persists_to_db(self):
+        init_db()
+        uid = _uuid()
+        with get_session() as session:
+            session.add(LLMUsage(
+                id=uid,
+                provider="ollama",
+                model="gemma3:27b",
+                stage="classification",
+                call_type="text",
+                prompt_tokens=120,
+                completion_tokens=60,
+                total_tokens=180,
+                document_id=None,
+            ))
+            session.commit()
+
+        with get_session() as session:
+            row = session.get(LLMUsage, uid)
+            assert row is not None
+            assert row.provider == "ollama"
+            assert row.stage == "classification"
+            assert row.total_tokens == 180
+            assert row.document_id is None
+
+    def test_persists_with_document_id(self):
+        """document_id is stored as a plain string (no FK), survives without a real document."""
+        init_db()
+        uid = _uuid()
+        fake_doc_id = _uuid()
+        with get_session() as session:
+            session.add(LLMUsage(
+                id=uid,
+                provider="litellm",
+                model="gpt-4o",
+                stage="ocr",
+                call_type="vision",
+                prompt_tokens=500,
+                completion_tokens=200,
+                total_tokens=700,
+                document_id=fake_doc_id,
+            ))
+            session.commit()
+
+        with get_session() as session:
+            row = session.get(LLMUsage, uid)
+            assert row.document_id == fake_doc_id
+            assert row.call_type == "vision"

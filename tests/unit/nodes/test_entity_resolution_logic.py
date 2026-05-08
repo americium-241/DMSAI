@@ -1,10 +1,11 @@
 """Unit tests for nodes/entity_resolution_node/src/entity_resolution_logic.py.
 
-Architecture under test (LLM-first):
+Architecture under test (LLM-first + optional embedding pre-filter):
   1. Hard identifier match  → conf = 1.0, no LLM called
-  2. Token-overlap pre-filter → top-K candidates
-  3. LLM open question per candidate → {"same", "confidence", "reasoning", "canonical_name"}
-  4. Best LLM match above merge_threshold wins; else new entity created
+  2. Embedding cosine pre-rank (optional, no-op when disabled)
+  3. Token-overlap pre-filter → top-K candidates
+  4. LLM open question per candidate → {"same", "confidence", "reasoning", "canonical_name"}
+  5. Best LLM match above merge_threshold wins; else new entity created
 """
 
 from __future__ import annotations
@@ -18,9 +19,9 @@ import pytest
 from sqlmodel import select
 
 from dmsai_models import (
-    Document, Entity, EntityField, DocumentEntity, get_session, init_db,
+    Document, Entity, EntityField, EntityEmbedding, DocumentEntity, get_session, init_db,
 )
-from fixtures.mock_responses import MOCK_ENTITY_EXTRACTION_RESPONSE
+from fixtures.mock_responses import MOCK_ENTITY_EXTRACTION_RESPONSE, MOCK_EMBEDDING_VECTOR
 
 entity_resolution_logic = sys.modules["entity_resolution_logic"]
 ingestion_logic = sys.modules["ingestion_logic"]
@@ -495,3 +496,143 @@ class TestProcessEntityResolution:
         resolved = result["resolved_entities"]
         assert len(resolved) == 1
         assert resolved[0]["is_new"] is True, "Low LLM confidence should create new entity"
+
+
+# ---------------------------------------------------------------------------
+# Embedding integration tests
+# ---------------------------------------------------------------------------
+
+class TestEntityResolutionEmbedding:
+    """Verify the embedding pre-filter and storage integration."""
+
+    @pytest.mark.asyncio
+    async def test_entity_embedding_stored_for_new_entity(self):
+        """A newly created entity should have an EntityEmbedding row persisted
+        when call_embedding returns a vector."""
+        import dmsai_models.embedding as _emb
+
+        unique_name = f"EmbedCo {uuid.uuid4().hex[:8]}"
+        entities = [{
+            "name": unique_name,
+            "entity_type": "company",
+            "role": "issuer",
+            "confidence": 0.9,
+            "fields": {"tax_id": f"EMBED-{uuid.uuid4().hex}"},
+        }]
+        payload = _make_payload_with_entities(entities)
+
+        # Enable embedding: override the autouse None mock with a real vector
+        with patch.object(_emb, "call_embedding", new_callable=AsyncMock,
+                          return_value=MOCK_EMBEDDING_VECTOR), \
+             patch.object(entity_resolution_logic, "_call_llm", new_callable=AsyncMock,
+                          return_value=LLM_DIFFERENT):
+            result = await entity_resolution_logic.process_entity_resolution(payload)
+
+        resolved = result["resolved_entities"]
+        assert resolved[0]["is_new"] is True
+        new_entity_id = resolved[0]["entity_id"]
+
+        with get_session() as session:
+            emb = session.exec(
+                select(EntityEmbedding)
+                .where(EntityEmbedding.entity_id == new_entity_id)
+            ).first()
+
+        assert emb is not None, "EntityEmbedding row expected for new entity"
+        import json as _json
+        assert _json.loads(emb.vector) == MOCK_EMBEDDING_VECTOR
+
+    @pytest.mark.asyncio
+    async def test_no_entity_embedding_stored_when_disabled(self):
+        """When call_embedding returns None (disabled), no EntityEmbedding is written."""
+        unique_name = f"NoEmbedCo {uuid.uuid4().hex[:8]}"
+        entities = [{
+            "name": unique_name,
+            "entity_type": "company",
+            "role": "issuer",
+            "confidence": 0.9,
+            "fields": {},
+        }]
+        payload = _make_payload_with_entities(entities)
+
+        # autouse fixture already returns None — no embedding should be stored
+        with patch.object(entity_resolution_logic, "_call_llm", new_callable=AsyncMock,
+                          return_value=LLM_DIFFERENT):
+            result = await entity_resolution_logic.process_entity_resolution(payload)
+
+        resolved = result["resolved_entities"]
+        new_entity_id = resolved[0]["entity_id"]
+
+        with get_session() as session:
+            emb = session.exec(
+                select(EntityEmbedding)
+                .where(EntityEmbedding.entity_id == new_entity_id)
+            ).first()
+
+        assert emb is None, "No EntityEmbedding expected when embedding is disabled"
+
+    @pytest.mark.asyncio
+    async def test_cosine_preranking_does_not_change_llm_result(self):
+        """Even when cosine pre-ranking is active, the LLM decision is authoritative."""
+        import dmsai_models.embedding as _emb
+        from fixtures.mock_responses import MOCK_EMBEDDING_VECTOR_B
+
+        unique_suffix = uuid.uuid4().hex[:8]
+        existing_name = f"CosineTest {unique_suffix}"
+        incoming_name = f"CosineTest {unique_suffix} Inc"
+
+        init_db()
+        existing_id = str(uuid.uuid4())
+        with get_session() as session:
+            session.add(Entity(
+                id=existing_id, entity_type="company",
+                name=existing_name, canonical_name=existing_name,
+            ))
+            # Pre-seed an embedding for the existing entity
+            session.add(EntityEmbedding(
+                id=str(uuid.uuid4()),
+                entity_id=existing_id,
+                model="",
+                vector=json.dumps(MOCK_EMBEDDING_VECTOR),  # same as incoming → high cosine
+            ))
+            session.commit()
+
+        entities = [{
+            "name": incoming_name,
+            "entity_type": "company",
+            "role": "issuer",
+            "confidence": 0.9,
+            "fields": {},
+        }]
+        payload = _make_payload_with_entities(entities)
+
+        # incoming vec == existing vec → cosine = 1.0 → candidate is ranked first
+        # LLM still says "same" → entity should be merged
+        with patch.object(_emb, "call_embedding", new_callable=AsyncMock,
+                          return_value=MOCK_EMBEDDING_VECTOR), \
+             patch.object(entity_resolution_logic, "_call_llm", new_callable=AsyncMock,
+                          return_value=LLM_SAME):
+            result = await entity_resolution_logic.process_entity_resolution(payload)
+
+        resolved = result["resolved_entities"]
+        assert resolved[0]["entity_id"] == existing_id
+        assert resolved[0]["is_new"] is False
+
+    @pytest.mark.asyncio
+    async def test_pipeline_succeeds_when_embedding_raises(self):
+        """A crashing embedding call must NOT fail the resolution stage."""
+        import dmsai_models.embedding as _emb
+
+        entities = _sample_entities()
+        payload = _make_payload_with_entities(entities)
+
+        async def _crash(*a, **kw):
+            raise RuntimeError("embedding model unavailable")
+
+        with patch.object(_emb, "call_embedding", side_effect=_crash), \
+             patch.object(entity_resolution_logic, "_call_llm", new_callable=AsyncMock,
+                          return_value=LLM_DIFFERENT):
+            result = await entity_resolution_logic.process_entity_resolution(payload)
+
+        assert "resolved_entities" in result
+        assert "entity_resolution_completed" in result["history"]

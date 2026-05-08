@@ -1,5 +1,6 @@
 import base64
 import logging
+from typing import Optional
 
 import fitz  # PyMuPDF
 
@@ -21,7 +22,7 @@ def pdf_pages_to_base64_images(pdf_bytes: bytes, dpi: int = 200) -> list[str]:
     return images_b64
 
 
-async def run_vision_llm(pdf_bytes: bytes) -> str:
+async def run_vision_llm(pdf_bytes: bytes, document_id: Optional[str] = None) -> str:
     """
     Send each page of the PDF as an image to a Vision LLM
     (Ollama or LiteLLM, based on SystemConfig) and concatenate the text.
@@ -31,7 +32,7 @@ async def run_vision_llm(pdf_bytes: bytes) -> str:
 
     for i, img_b64 in enumerate(page_images):
         try:
-            text = await call_vision_llm(img_b64)
+            text = await call_vision_llm(img_b64, stage="ocr", document_id=document_id)
             all_text_parts.append(text.strip())
             logger.info(f"Vision LLM OCR page {i+1}/{len(page_images)}: {len(text)} chars")
         except Exception as e:

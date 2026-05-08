@@ -10,13 +10,12 @@ import DocumentDetailPage from './pages/DocumentDetail';
 import UserBucketsPage from './pages/UserBuckets';
 import UserBucketDetailPage from './pages/UserBucketDetail';
 import BucketDetailPage from './pages/BucketDetail';
-import PipelinePage from './pages/Pipeline';
 import UsersPage from './pages/admin/Users';
 import OrganizationManagement from './pages/admin/OrganizationManagement';
 import BucketManagement from './pages/admin/BucketManagement';
 import SystemConfigPage from './pages/admin/SystemConfig';
 import LLMSettingsPage from './pages/admin/LLMSettings';
-import QualityMetricsPage from './pages/admin/QualityMetrics';
+import AdminMetricsPage from './pages/admin/AdminMetrics';
 import EntityDetailPage from './pages/admin/EntityDetail';
 import ArchiveManagementPage from './pages/admin/ArchiveManagement';
 import EntityDirectoryPage from './pages/EntityDirectory';
@@ -59,8 +58,9 @@ function AppRoutes() {
           <Route path="admin/llm-settings" element={<LLMSettingsPage />} />
           <Route path="admin/general-settings" element={<SystemConfigPage />} />
           <Route path="admin/system-config" element={<Navigate to="/admin/general-settings" replace />} />
-          <Route path="admin/pipeline" element={<PipelinePage />} />
-          <Route path="admin/quality-metrics" element={<QualityMetricsPage />} />
+          <Route path="admin/metrics" element={<AdminMetricsPage />} />
+          <Route path="admin/pipeline" element={<Navigate to="/admin/metrics" replace />} />
+          <Route path="admin/quality-metrics" element={<Navigate to="/admin/metrics" replace />} />
           <Route path="admin/entities/:id" element={<EntityDetailPage />} />
           <Route path="admin/archive" element={<ArchiveManagementPage />} />
         </Route>

@@ -1,9 +1,15 @@
-"""Shared LLM caller that dispatches to Ollama or LiteLLM based on SystemConfig."""
+"""Shared LLM caller that dispatches to Ollama or LiteLLM based on SystemConfig.
 
+Token usage is recorded automatically into LLMUsage for every successful call.
+Both providers are supported:
+  - Ollama:   response["prompt_eval_count"] / response["eval_count"]
+  - LiteLLM:  response["usage"]["prompt_tokens"] / ["completion_tokens"]
+"""
 from __future__ import annotations
 
 import logging
 import time
+import uuid
 from typing import Optional
 
 import httpx
@@ -13,11 +19,11 @@ logger = logging.getLogger("dmsai_llm")
 
 _config_cache: dict[str, str] = {}
 _cache_ts: float = 0.0
-_CACHE_TTL = 30.0  # seconds
+_CACHE_TTL = 30.0
 
 
 def _refresh_config() -> dict[str, str]:
-    """Load all LLM + OCR settings from SystemConfig (cached for _CACHE_TTL)."""
+    """Load LLM + OCR settings from SystemConfig (cached for _CACHE_TTL)."""
     global _config_cache, _cache_ts
     now = time.time()
     if _config_cache and (now - _cache_ts) < _CACHE_TTL:
@@ -48,11 +54,61 @@ def _refresh_config() -> dict[str, str]:
     return _config_cache
 
 
-async def call_llm(prompt: str, json_format: bool = False, timeout: float = 300.0) -> str:
+# ---------------------------------------------------------------------------
+# Token usage recording
+# ---------------------------------------------------------------------------
+
+def _record_usage(
+    provider: str,
+    model: str,
+    stage: str,
+    call_type: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    document_id: Optional[str] = None,
+) -> None:
+    """Write one LLMUsage row.  Silently absorbs all errors."""
+    if prompt_tokens == 0 and completion_tokens == 0:
+        return
+    try:
+        from datetime import datetime
+        from .connection import get_engine
+        from .models import LLMUsage
+        from sqlmodel import Session
+        with Session(get_engine()) as session:
+            session.add(LLMUsage(
+                id=str(uuid.uuid4()),
+                provider=provider,
+                model=model,
+                stage=stage,
+                call_type=call_type,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+                document_id=document_id,
+            ))
+            session.commit()
+    except Exception as e:
+        logger.debug("Failed to record LLM usage (non-critical): %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+async def call_llm(
+    prompt: str,
+    json_format: bool = False,
+    timeout: float = 300.0,
+    stage: str = "unknown",
+    document_id: Optional[str] = None,
+) -> str:
     """
-    Unified LLM call.  Reads provider from SystemConfig DB (cached).
-    - ollama: POST {base}/api/chat  (Ollama native format)
-    - litellm: POST {base}/chat/completions  (OpenAI-compatible)
+    Unified LLM text call.  Reads provider from SystemConfig (cached).
+    - ollama:   POST {base}/api/chat
+    - litellm:  POST {base}/chat/completions  (OpenAI-compatible)
+
+    Token usage is recorded into LLMUsage after every successful call.
     """
     cfg = _refresh_config()
     provider = cfg.get("llm_provider", "ollama")
@@ -62,12 +118,17 @@ async def call_llm(prompt: str, json_format: bool = False, timeout: float = 300.
         pass
 
     if provider == "litellm":
-        return await _call_litellm(prompt, json_format, timeout, cfg)
-    return await _call_ollama(prompt, json_format, timeout, cfg)
+        return await _call_litellm(prompt, json_format, timeout, cfg, stage, document_id)
+    return await _call_ollama(prompt, json_format, timeout, cfg, stage, document_id)
 
 
 async def _call_ollama(
-    prompt: str, json_format: bool, timeout: float, cfg: dict[str, str],
+    prompt: str,
+    json_format: bool,
+    timeout: float,
+    cfg: dict[str, str],
+    stage: str,
+    document_id: Optional[str],
 ) -> str:
     base_url = cfg.get("ollama_base_url", "http://localhost:11434")
     model = cfg.get("llm_model", "gemma3:27b")
@@ -85,11 +146,21 @@ async def _call_ollama(
         resp = await client.post(url, json=body)
         resp.raise_for_status()
         data = resp.json()
-        return data.get("message", {}).get("content", "")
+
+    prompt_tokens     = data.get("prompt_eval_count", 0) or 0
+    completion_tokens = data.get("eval_count", 0) or 0
+    _record_usage("ollama", model, stage, "text", prompt_tokens, completion_tokens, document_id)
+
+    return data.get("message", {}).get("content", "")
 
 
 async def _call_litellm(
-    prompt: str, json_format: bool, timeout: float, cfg: dict[str, str],
+    prompt: str,
+    json_format: bool,
+    timeout: float,
+    cfg: dict[str, str],
+    stage: str,
+    document_id: Optional[str],
 ) -> str:
     base_url = cfg.get("litellm_base_url", "").rstrip("/")
     if not base_url:
@@ -117,18 +188,23 @@ async def _call_litellm(
         resp = await client.post(url, json=body, headers=headers)
         resp.raise_for_status()
         data = resp.json()
-        choices = data.get("choices", [])
-        if choices:
-            return choices[0].get("message", {}).get("content", "")
-        return ""
+
+    usage = data.get("usage") or {}
+    prompt_tokens     = usage.get("prompt_tokens", 0) or 0
+    completion_tokens = usage.get("completion_tokens", 0) or 0
+    _record_usage("litellm", model, stage, "text", prompt_tokens, completion_tokens, document_id)
+
+    choices = data.get("choices", [])
+    if choices:
+        return choices[0].get("message", {}).get("content", "")
+    return ""
 
 
 # ---------------------------------------------------------------------------
-# Vision LLM (image-based calls, used by OCR fallback)
+# Vision LLM
 # ---------------------------------------------------------------------------
 
 def get_ocr_config() -> dict[str, str]:
-    """Return merged LLM + OCR config from SystemConfig."""
     return _refresh_config()
 
 
@@ -136,11 +212,10 @@ async def call_vision_llm(
     image_b64: str,
     prompt: str | None = None,
     timeout: float = 300.0,
+    stage: str = "ocr",
+    document_id: Optional[str] = None,
 ) -> str:
-    """
-    Send a base64 PNG image to a vision-capable LLM.
-    Dispatches to Ollama or LiteLLM based on SystemConfig.
-    """
+    """Send a base64 PNG image to a vision-capable LLM."""
     cfg = _refresh_config()
     try:
         timeout = float(cfg.get("llm_vision_timeout_seconds", timeout))
@@ -155,12 +230,17 @@ async def call_vision_llm(
         )
 
     if provider == "litellm":
-        return await _vision_litellm(image_b64, prompt, timeout, cfg)
-    return await _vision_ollama(image_b64, prompt, timeout, cfg)
+        return await _vision_litellm(image_b64, prompt, timeout, cfg, stage, document_id)
+    return await _vision_ollama(image_b64, prompt, timeout, cfg, stage, document_id)
 
 
 async def _vision_ollama(
-    image_b64: str, prompt: str, timeout: float, cfg: dict[str, str],
+    image_b64: str,
+    prompt: str,
+    timeout: float,
+    cfg: dict[str, str],
+    stage: str,
+    document_id: Optional[str],
 ) -> str:
     base_url = cfg.get("ollama_base_url", "http://localhost:11434")
     model = cfg.get("ocr_vision_model", "") or cfg.get("llm_model", "gemma3:27b")
@@ -174,11 +254,21 @@ async def _vision_ollama(
         resp = await client.post(url, json=body)
         resp.raise_for_status()
         data = resp.json()
-        return data.get("message", {}).get("content", "")
+
+    prompt_tokens     = data.get("prompt_eval_count", 0) or 0
+    completion_tokens = data.get("eval_count", 0) or 0
+    _record_usage("ollama", model, stage, "vision", prompt_tokens, completion_tokens, document_id)
+
+    return data.get("message", {}).get("content", "")
 
 
 async def _vision_litellm(
-    image_b64: str, prompt: str, timeout: float, cfg: dict[str, str],
+    image_b64: str,
+    prompt: str,
+    timeout: float,
+    cfg: dict[str, str],
+    stage: str,
+    document_id: Optional[str],
 ) -> str:
     base_url = cfg.get("litellm_base_url", "").rstrip("/")
     if not base_url:
@@ -201,12 +291,7 @@ async def _vision_litellm(
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{image_b64}",
-                        },
-                    },
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
                 ],
             }
         ],
@@ -216,7 +301,13 @@ async def _vision_litellm(
         resp = await client.post(url, json=body, headers=headers)
         resp.raise_for_status()
         data = resp.json()
-        choices = data.get("choices", [])
-        if choices:
-            return choices[0].get("message", {}).get("content", "")
-        return ""
+
+    usage = data.get("usage") or {}
+    prompt_tokens     = usage.get("prompt_tokens", 0) or 0
+    completion_tokens = usage.get("completion_tokens", 0) or 0
+    _record_usage("litellm", model, stage, "vision", prompt_tokens, completion_tokens, document_id)
+
+    choices = data.get("choices", [])
+    if choices:
+        return choices[0].get("message", {}).get("content", "")
+    return ""

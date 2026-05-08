@@ -2,14 +2,15 @@
 
 Resolution pipeline (in order):
   1. Hard identifier match  (tax_id, siret, …)     → conf = 1.0, no LLM needed
-  2. Token-overlap pre-filter                        → select top-K cheap candidates
-  3. LLM open question per candidate                 → "are these the same entity?"
-  4. Best LLM match above threshold wins, else create new entity
+  2. Embedding cosine pre-filter (optional)          → re-rank candidates when
+       entity embeddings are available; no-op otherwise
+  3. Token-overlap pre-filter                        → select top-K cheap candidates
+  4. LLM open question per candidate                 → "are these the same entity?"
+  5. Best LLM match above threshold wins, else create new entity
 
-The old Levenshtein / band-based gating is removed.  The LLM is now the
-primary arbiter for name resolution; it uses open-ended reasoning so it can
-consider abbreviations, legal forms, aliases, and conflicting evidence before
-answering.
+Step 2 is additive: when embedding_enabled=false or the model server is
+unreachable, the node falls back transparently to step 3 (token overlap only).
+The LLM resolution logic (steps 4-5) is completely unchanged.
 """
 from __future__ import annotations
 
@@ -24,7 +25,7 @@ from datetime import datetime
 from sqlmodel import select
 
 from dmsai_models import (
-    Document, Entity, EntityField, DocumentEntity, SystemConfig,
+    Document, Entity, EntityField, DocumentEntity, EntityEmbedding, SystemConfig,
     compute_item_confidence, get_session, init_db, record_pipeline_event,
 )
 
@@ -161,15 +162,20 @@ def _identifiers_match(incoming_fields: dict, existing_fields: list[EntityField]
 # LLM helpers
 # ---------------------------------------------------------------------------
 
-async def _call_llm(prompt: str, json_format: bool = False) -> str:
+async def _call_llm(
+    prompt: str,
+    json_format: bool = False,
+    document_id: str | None = None,
+) -> str:
     from dmsai_models.llm import call_llm
-    return await call_llm(prompt, json_format=json_format)
+    return await call_llm(prompt, json_format=json_format, stage="entity_resolution", document_id=document_id)
 
 
 async def _llm_compare(
     incoming: dict,
     existing: Entity,
     existing_fields: list[EntityField],
+    document_id: str | None = None,
 ) -> dict:
     """
     Ask the LLM the open resolution question.
@@ -185,7 +191,7 @@ async def _llm_compare(
         fields_b=json.dumps(fields_b, ensure_ascii=False),
     )
     try:
-        raw = await _call_llm(prompt, json_format=True)
+        raw = await _call_llm(prompt, json_format=True, document_id=document_id)
         text = raw.strip()
         # Strip markdown fences if the model adds them
         if text.startswith("```"):
@@ -211,16 +217,20 @@ async def _resolve_entity(
     entity_data: dict,
     candidates: list[Entity],
     entity_fields_map: dict[str, list[EntityField]],
+    document_id: str | None = None,
+    incoming_vec: list[float] | None = None,
+    candidate_embeddings_map: dict[str, list[float]] | None = None,
 ) -> tuple[Entity | None, float, str | None]:
     """
     LLM-first resolution.
 
     Steps:
       1. Hard identifier match  → return immediately at conf 1.0
-      2. Token-overlap pre-filter → keep top-K candidates for LLM
-      3. LLM open question for each candidate (in order of pre-filter score)
-      4. Return the first candidate where LLM confidence ≥ merge_threshold
-         (ties broken by pre-filter score so the closest name wins)
+      2. Embedding cosine pre-rank (optional) — blend cosine + token overlap
+         when embeddings are available; pure token overlap otherwise
+      3. Token-overlap gate → skip LLM when best score < min_overlap
+      4. LLM open question for each candidate (top-K, ordered by blended score)
+      5. Return the best candidate where LLM confidence ≥ merge_threshold
 
     Returns (matched_entity | None, confidence, suggested_canonical_name | None).
     """
@@ -241,20 +251,36 @@ async def _resolve_entity(
     if not candidates:
         return None, 0.0, None
 
-    # — Step 2: token-overlap pre-filter ----------------------------------------
+    # — Step 2: score candidates (cosine + token overlap blended when available) -
     top_k = _config_int("entity_resolution_top_k", int(os.environ.get("ENTITY_RESOLUTION_TOP_K", "5")))
     incoming_name = entity_data.get("name", "")
 
+    use_embeddings = (
+        incoming_vec is not None
+        and candidate_embeddings_map is not None
+        and any(eid in candidate_embeddings_map for eid in (e.id for e in candidates))
+    )
+
     scored: list[tuple[float, Entity]] = []
     for existing in candidates:
-        score = _token_overlap(incoming_name, existing.name)
-        scored.append((score, existing))
+        token_score = _token_overlap(incoming_name, existing.name)
+        if use_embeddings:
+            cand_vec = candidate_embeddings_map.get(existing.id)  # type: ignore[union-attr]
+            if cand_vec:
+                from dmsai_models.embedding import cosine_similarity
+                cos_score = cosine_similarity(incoming_vec, cand_vec)  # type: ignore[arg-type]
+                # Blend: embeddings carry more semantic weight; token overlap
+                # acts as a guard against low-quality embedding models.
+                blended = 0.6 * cos_score + 0.4 * token_score
+                scored.append((blended, existing))
+                continue
+        scored.append((token_score, existing))
 
-    # Sort descending by token overlap, take top K
+    # Sort descending, take top K
     scored.sort(key=lambda x: x[0], reverse=True)
     top_candidates = scored[:top_k]
 
-    # Skip LLM entirely if no candidate has any token overlap
+    # Skip LLM when best candidate is clearly dissimilar
     min_overlap = _config_float("entity_resolution_min_overlap", float(os.environ.get("ENTITY_RESOLUTION_MIN_OVERLAP", "0.1")))
     if top_candidates and top_candidates[0][0] < min_overlap:
         logger.debug(
@@ -274,7 +300,7 @@ async def _resolve_entity(
         if overlap_score < min_overlap:
             break  # List is sorted; once below min we're done
 
-        llm = await _llm_compare(entity_data, existing, entity_fields_map.get(existing.id, []))
+        llm = await _llm_compare(entity_data, existing, entity_fields_map.get(existing.id, []), document_id=document_id)
         logger.info(
             "LLM resolution '%s' vs '%s': same=%s conf=%.2f | %s",
             incoming_name, existing.name,
@@ -325,6 +351,35 @@ async def process_entity_resolution(payload: dict) -> dict:
     link_confidences: list[float] = []
     org_id: str | None = payload.get("organization_id")
 
+    # ---------------------------------------------------------------------------
+    # Embedding step (best-effort, fully non-blocking)
+    # Pre-compute a vector for each incoming entity so _resolve_entity can use
+    # cosine similarity to re-rank candidates before calling the LLM.
+    # If embedding is disabled or fails, incoming_embeddings stays empty and
+    # the node falls back to pure token-overlap scoring — no change in behaviour.
+    # ---------------------------------------------------------------------------
+    incoming_embeddings: dict[int, list[float]] = {}  # list-position → vector
+    embedding_model: str = ""
+    try:
+        from dmsai_models.embedding import (
+            call_embedding,
+            entity_embedding_text,
+            _refresh_embedding_config,
+        )
+        # call_embedding already checks embedding_enabled internally and returns None
+        # when disabled, so we don't need to guard it here.  We only read the model
+        # name so that later DB queries use the right key.
+        embedding_model = _refresh_embedding_config().get("embedding_model", "")
+        for i, entity_data in enumerate(extracted_entities):
+            text = entity_embedding_text(entity_data)
+            vec = await call_embedding(
+                text, stage="entity_resolution", document_id=doc_id
+            )
+            if vec:
+                incoming_embeddings[i] = vec
+    except Exception as exc:
+        logger.debug("[%s] Entity embedding pre-computation skipped: %s", doc_id, exc)
+
     with get_session() as session:
         # Load candidates filtered by the entity types we actually need and org scope
         entity_types_needed = {e.get("entity_type", "other") for e in extracted_entities}
@@ -337,22 +392,67 @@ async def process_entity_resolution(payload: dict) -> dict:
                 )
             return q
 
+        # --- Fix 3: LIKE pre-filter -----------------------------------------------
+        # Build significant tokens from ALL incoming entity names so the DB only
+        # returns entities that share at least one token — a strict superset of what
+        # token_overlap > 0 would select.  The full token-overlap + LLM resolution
+        # below is completely unchanged; we're only reducing the candidate set loaded
+        # from the DB.
+        all_incoming_names = [e.get("name", "") for e in extracted_entities if e.get("name")]
+        significant_tokens = set()
+        for name in all_incoming_names:
+            significant_tokens.update(t for t in _token_set(name) if len(t) > 2)
+
+        def _with_name_filter(q):
+            if not significant_tokens:
+                return q
+            from sqlmodel import or_ as _or
+            return q.where(_or(*[Entity.name.ilike(f"%{t}%") for t in significant_tokens]))
+
         candidates = session.exec(
-            _scoped(select(Entity).where(Entity.entity_type.in_(entity_types_needed)))
+            _with_name_filter(
+                _scoped(select(Entity).where(Entity.entity_type.in_(entity_types_needed)))
+            )
         ).all()
+        # "other"-typed entities are always included regardless of name tokens
         untyped = session.exec(
             _scoped(select(Entity).where(Entity.entity_type == "other"))
         ).all()
         all_candidates = list({e.id: e for e in list(candidates) + list(untyped)}.values())
 
-        # Pre-load all entity fields to avoid N+1 queries
+        # --- Fix 2: bulk EntityField load (N queries → 1) -------------------------
         entity_fields_map: dict[str, list[EntityField]] = {}
-        for ent in all_candidates:
-            entity_fields_map[ent.id] = session.exec(
-                select(EntityField).where(EntityField.entity_id == ent.id)
+        if all_candidates:
+            all_candidate_ids = [e.id for e in all_candidates]
+            all_fields = session.exec(
+                select(EntityField).where(EntityField.entity_id.in_(all_candidate_ids))
             ).all()
+            for ef in all_fields:
+                entity_fields_map.setdefault(ef.entity_id, []).append(ef)
+        # Ensure every candidate has an entry even when it has no fields
+        for ent in all_candidates:
+            entity_fields_map.setdefault(ent.id, [])
 
-        for entity_data in extracted_entities:
+        # Load entity embeddings for all candidates in one query
+        candidate_embeddings_map: dict[str, list[float]] = {}
+        if all_candidates and incoming_embeddings:
+            cand_ids = [e.id for e in all_candidates]
+            for emb_row in session.exec(
+                select(EntityEmbedding)
+                .where(EntityEmbedding.entity_id.in_(cand_ids))
+                .where(EntityEmbedding.model == embedding_model)
+            ).all():
+                try:
+                    candidate_embeddings_map[emb_row.entity_id] = json.loads(emb_row.vector)
+                except Exception:
+                    pass
+
+        # Tracks (entity_id, incoming_idx) for entities that need an embedding stored
+        # after the session commits.  We reuse the already-computed incoming vectors
+        # rather than calling the embedding model a second time.
+        entity_idx_for_embedding: list[tuple[str, int]] = []
+
+        for i, entity_data in enumerate(extracted_entities):
             etype = entity_data.get("entity_type", "other")
             ext_conf = max(0.0, min(1.0, float(entity_data.get("confidence", 0.5) or 0.5)))
 
@@ -364,6 +464,9 @@ async def process_entity_resolution(payload: dict) -> dict:
 
             matched, match_conf, suggested_canonical = await _resolve_entity(
                 entity_data, type_candidates, entity_fields_map,
+                document_id=doc_id,
+                incoming_vec=incoming_embeddings.get(i),
+                candidate_embeddings_map=candidate_embeddings_map if incoming_embeddings else None,
             )
 
             if matched:
@@ -372,6 +475,9 @@ async def process_entity_resolution(payload: dict) -> dict:
                 if suggested_canonical and not matched.canonical_name:
                     matched.canonical_name = suggested_canonical
                     session.add(matched)
+                # Queue embedding for existing entities that don't have one yet
+                if i in incoming_embeddings and entity_id not in candidate_embeddings_map:
+                    entity_idx_for_embedding.append((entity_id, i))
                 link_details = compute_item_confidence(
                     llm_confidence=ext_conf,
                     ocr_text=ocr_text,
@@ -437,6 +543,9 @@ async def process_entity_resolution(payload: dict) -> dict:
                 entity_fields_map[entity_id] = new_fields
                 link_conf = link_details["score"]
                 logger.info("[%s] Created new entity: %s (%s)", doc_id, new_entity.name, new_entity.entity_type)
+                # Queue embedding for this brand-new entity
+                if i in incoming_embeddings:
+                    entity_idx_for_embedding.append((entity_id, i))
 
             link_confidences.append(link_conf)
 
@@ -467,6 +576,24 @@ async def process_entity_resolution(payload: dict) -> dict:
             session.add(doc)
 
         session.commit()
+
+    # ---------------------------------------------------------------------------
+    # Store entity embeddings (outside the main session — graceful degradation)
+    # We reuse the pre-computed incoming vectors so no extra model calls needed.
+    # ---------------------------------------------------------------------------
+    if entity_idx_for_embedding and incoming_embeddings:
+        try:
+            from dmsai_models.embedding import store_entity_embedding
+            for entity_id_to_store, incoming_idx in entity_idx_for_embedding:
+                vec = incoming_embeddings.get(incoming_idx)
+                if vec:
+                    store_entity_embedding(entity_id_to_store, vec, model=embedding_model)
+                    logger.debug(
+                        "[%s] Entity embedding stored for %s (dim=%d)",
+                        doc_id, entity_id_to_store, len(vec),
+                    )
+        except Exception as exc:
+            logger.debug("[%s] Entity embedding storage skipped: %s", doc_id, exc)
 
     avg_res = sum(link_confidences) / len(link_confidences) if link_confidences else None
     payload["entity_resolution_confidence"] = round(avg_res, 4) if avg_res is not None else None

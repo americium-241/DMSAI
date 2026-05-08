@@ -19,6 +19,7 @@ from dmsai_models import (
     Document, DocumentEntity,
     Entity, EntityField,
     CanonicalDocumentClass, CanonicalField,
+    LLMUsage,
     Organization, OrgIngestionConfig, SystemConfig, User, UserOrganization, get_session, init_db,
 )
 from auth import require_admin, require_manager, get_current_user, hash_password, validate_password
@@ -281,6 +282,197 @@ async def quality_metrics(user: User = Depends(require_manager)):
         "most_corrected_fields": most_corrected_fields,
         "classification_changes": classification_changes,
         "recent_corrections": recent_corrections,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Global ingestion stats (admin — all orgs)
+# ---------------------------------------------------------------------------
+
+@router.get("/global-ingestion")
+async def global_ingestion(
+    days: int = 30,
+    admin: User = Depends(require_admin),
+):
+    """Global document ingestion stats across all organizations."""
+    from datetime import timedelta
+    init_db()
+    with get_session() as session:
+        # Daily counts for the past `days`
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        daily_rows = session.exec(
+            select(
+                func.strftime("%Y-%m-%d", Document.created_at),
+                func.count(),
+            )
+            .where(Document.created_at >= cutoff)
+            .group_by(func.strftime("%Y-%m-%d", Document.created_at))
+            .order_by(func.strftime("%Y-%m-%d", Document.created_at))
+        ).all()
+        daily_counts = [{"date": r[0], "count": r[1]} for r in daily_rows]
+
+        # Total documents all time
+        total_all = session.exec(select(func.count()).select_from(Document)).one()
+
+        # Status breakdown
+        status_rows = session.exec(
+            select(Document.status, func.count())
+            .group_by(Document.status)
+        ).all()
+        status_breakdown = {r[0]: r[1] for r in status_rows}
+
+        # Per-org breakdown
+        org_rows = session.exec(
+            select(Document.organization_id, func.count())
+            .group_by(Document.organization_id)
+            .order_by(func.count().desc())
+        ).all()
+        # Resolve org names
+        org_names: dict[str, str] = {}
+        for oid, _ in org_rows:
+            if oid and oid not in org_names:
+                org = session.get(Organization, oid)
+                org_names[oid] = org.name if org else oid
+        per_org = [
+            {"org_id": r[0], "org_name": org_names.get(r[0] or "", r[0] or "—"), "count": r[1]}
+            for r in org_rows
+        ]
+
+        # Top classifications global
+        cls_rows = session.exec(
+            select(Document.classification_label, func.count())
+            .where(Document.classification_label.isnot(None))
+            .group_by(Document.classification_label)
+            .order_by(func.count().desc())
+            .limit(10)
+        ).all()
+        top_classifications = [{"label": r[0], "count": r[1]} for r in cls_rows]
+
+    return {
+        "total_documents": total_all,
+        "daily_counts": daily_counts,
+        "status_breakdown": status_breakdown,
+        "per_org": per_org,
+        "top_classifications": top_classifications,
+        "days": days,
+    }
+
+
+# ---------------------------------------------------------------------------
+# LLM usage stats (admin — global)
+# ---------------------------------------------------------------------------
+
+@router.get("/llm-usage")
+async def llm_usage_stats(
+    days: int = 30,
+    admin: User = Depends(require_admin),
+):
+    """Global LLM token consumption analytics."""
+    from datetime import timedelta
+    init_db()
+    with get_session() as session:
+        cutoff = datetime.utcnow() - timedelta(days=days)
+
+        # Total tokens (all time)
+        total_row = session.exec(
+            select(
+                func.sum(LLMUsage.prompt_tokens),
+                func.sum(LLMUsage.completion_tokens),
+                func.sum(LLMUsage.total_tokens),
+                func.count(),
+            )
+        ).one()
+        total_prompt     = int(total_row[0] or 0)
+        total_completion = int(total_row[1] or 0)
+        total_tokens     = int(total_row[2] or 0)
+        total_calls      = int(total_row[3] or 0)
+
+        # Tokens in period
+        period_row = session.exec(
+            select(
+                func.sum(LLMUsage.prompt_tokens),
+                func.sum(LLMUsage.completion_tokens),
+                func.sum(LLMUsage.total_tokens),
+                func.count(),
+            )
+            .where(LLMUsage.created_at >= cutoff)
+        ).one()
+        period_prompt     = int(period_row[0] or 0)
+        period_completion = int(period_row[1] or 0)
+        period_tokens     = int(period_row[2] or 0)
+        period_calls      = int(period_row[3] or 0)
+
+        # By provider
+        prov_rows = session.exec(
+            select(LLMUsage.provider, func.sum(LLMUsage.total_tokens), func.count())
+            .group_by(LLMUsage.provider)
+        ).all()
+        by_provider = [{"provider": r[0], "total_tokens": int(r[1] or 0), "calls": int(r[2] or 0)} for r in prov_rows]
+
+        # By model
+        model_rows = session.exec(
+            select(LLMUsage.model, func.sum(LLMUsage.total_tokens), func.count())
+            .group_by(LLMUsage.model)
+            .order_by(func.sum(LLMUsage.total_tokens).desc())
+        ).all()
+        by_model = [{"model": r[0], "total_tokens": int(r[1] or 0), "calls": int(r[2] or 0)} for r in model_rows]
+
+        # By stage
+        stage_rows = session.exec(
+            select(LLMUsage.stage, func.sum(LLMUsage.total_tokens), func.count())
+            .group_by(LLMUsage.stage)
+            .order_by(func.sum(LLMUsage.total_tokens).desc())
+        ).all()
+        by_stage = [{"stage": r[0], "total_tokens": int(r[1] or 0), "calls": int(r[2] or 0)} for r in stage_rows]
+
+        # By call type (text vs vision)
+        type_rows = session.exec(
+            select(LLMUsage.call_type, func.sum(LLMUsage.total_tokens), func.count())
+            .group_by(LLMUsage.call_type)
+        ).all()
+        by_call_type = [{"call_type": r[0], "total_tokens": int(r[1] or 0), "calls": int(r[2] or 0)} for r in type_rows]
+
+        # Daily token trend for the period
+        daily_rows = session.exec(
+            select(
+                func.strftime("%Y-%m-%d", LLMUsage.created_at),
+                func.sum(LLMUsage.prompt_tokens),
+                func.sum(LLMUsage.completion_tokens),
+                func.count(),
+            )
+            .where(LLMUsage.created_at >= cutoff)
+            .group_by(func.strftime("%Y-%m-%d", LLMUsage.created_at))
+            .order_by(func.strftime("%Y-%m-%d", LLMUsage.created_at))
+        ).all()
+        daily_tokens = [
+            {
+                "date": r[0],
+                "prompt_tokens": int(r[1] or 0),
+                "completion_tokens": int(r[2] or 0),
+                "calls": int(r[3] or 0),
+            }
+            for r in daily_rows
+        ]
+
+    return {
+        "total": {
+            "prompt_tokens": total_prompt,
+            "completion_tokens": total_completion,
+            "total_tokens": total_tokens,
+            "calls": total_calls,
+        },
+        "period": {
+            "days": days,
+            "prompt_tokens": period_prompt,
+            "completion_tokens": period_completion,
+            "total_tokens": period_tokens,
+            "calls": period_calls,
+        },
+        "by_provider": by_provider,
+        "by_model": by_model,
+        "by_stage": by_stage,
+        "by_call_type": by_call_type,
+        "daily_tokens": daily_tokens,
     }
 
 

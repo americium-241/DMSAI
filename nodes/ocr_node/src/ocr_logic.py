@@ -9,6 +9,28 @@ from .vllm_engine import run_vision_llm
 logger = logging.getLogger("ocr_node")
 
 
+async def _embed_document(doc_id: str, ocr_text: str) -> None:
+    """Compute and persist the document embedding (best-effort, never raises)."""
+    try:
+        from dmsai_models.embedding import (
+            call_embedding,
+            document_embedding_text,
+            store_document_embedding,
+            _refresh_embedding_config,
+        )
+        cfg = _refresh_embedding_config()
+        model = cfg.get("embedding_model", "")
+        text_to_embed = document_embedding_text(ocr_text)
+        if not text_to_embed:
+            return
+        vec = await call_embedding(text_to_embed, stage="ocr", document_id=doc_id)
+        if vec:
+            store_document_embedding(doc_id, vec, model=model)
+            logger.debug("[%s] Document embedding stored (dim=%d)", doc_id, len(vec))
+    except Exception as exc:
+        logger.debug("[%s] Document embedding skipped: %s", doc_id, exc)
+
+
 async def process_document(payload: dict) -> dict:
     """OCR via Vision LLM -- sends each PDF page as an image to the configured LLM."""
     init_db()
@@ -19,7 +41,7 @@ async def process_document(payload: dict) -> dict:
     with open(storage_path, "rb") as f:
         pdf_bytes = f.read()
 
-    text = await run_vision_llm(pdf_bytes)
+    text = await run_vision_llm(pdf_bytes, document_id=doc_id)
     ocr_method = "vllm"
     confidence = 1.0 if text.strip() else 0.0
 
@@ -34,6 +56,10 @@ async def process_document(payload: dict) -> dict:
             doc.status = "OCR_DONE"
             doc.updated_at = datetime.utcnow()
             session.commit()
+
+    # Best-effort document embedding — runs after the DB session closes so a
+    # failure here can never corrupt the document record.
+    await _embed_document(doc_id, text)
 
     payload["ocr_text"] = text
     payload["ocr_confidence"] = confidence

@@ -155,41 +155,63 @@ async def list_documents(
 ):
     init_db()
     with get_session() as session:
-        query = select(Document).where(
-            Document.organization_id == user.organization_id
-        )
-        # By default exclude archived and trashed from the normal listing
+        # --- Fix 5: entity_id early-exit uses a DB subquery instead of a Python list ---
+        if entity_id:
+            entity_doc_subq = (
+                select(DocumentEntity.document_id)
+                .where(DocumentEntity.entity_id == entity_id)
+                .scalar_subquery()
+            )
+            # Fast check: if no links exist at all, skip everything
+            if not session.exec(
+                select(func.count(DocumentEntity.id))
+                .where(DocumentEntity.entity_id == entity_id)
+            ).one():
+                return {"total": 0, "page": page, "page_size": page_size, "documents": []}
+
+        # --- Fix 4: build shared filter conditions for count + data queries ----------
+        # Collecting conditions as a list lets us apply identical filters to both
+        # COUNT(id) and the paginated SELECT without materialising a subquery.
+        conditions = [Document.organization_id == user.organization_id]
+
         if trashed == "true":
-            query = query.where(Document.trashed_at.isnot(None))
+            conditions.append(Document.trashed_at.isnot(None))
         elif archived == "true":
-            query = query.where(Document.archived_at.isnot(None), Document.trashed_at.is_(None))
+            conditions.append(Document.archived_at.isnot(None))
+            conditions.append(Document.trashed_at.is_(None))
         else:
-            query = query.where(Document.archived_at.is_(None), Document.trashed_at.is_(None))
+            conditions.append(Document.archived_at.is_(None))
+            conditions.append(Document.trashed_at.is_(None))
+
         if status:
-            query = query.where(Document.status == status)
+            conditions.append(Document.status == status)
         if mode:
-            query = query.where(Document.mode == mode)
+            conditions.append(Document.mode == mode)
         if classification:
-            query = query.where(
+            conditions.append(
                 or_(
                     Document.classification_label == classification,
                     Document.classification_subcategory_label == classification,
                 )
             )
         if search:
-            query = query.where(Document.filename.contains(search))
+            conditions.append(Document.filename.contains(search))
         if entity_id:
-            doc_ids = [de.document_id for de in session.exec(
-                select(DocumentEntity).where(DocumentEntity.entity_id == entity_id)
-            ).all()]
-            if doc_ids:
-                query = query.where(Document.id.in_(doc_ids))
-            else:
-                return {"total": 0, "page": page, "page_size": page_size, "documents": []}
+            conditions.append(Document.id.in_(entity_doc_subq))
 
-        query = query.order_by(Document.created_at.desc())
-        total = session.exec(select(func.count()).select_from(query.subquery())).one()
-        docs = session.exec(query.offset((page - 1) * page_size).limit(page_size)).all()
+        # COUNT using an index-only scan (no subquery materialisation)
+        total = session.exec(
+            select(func.count(Document.id)).where(*conditions)
+        ).one()
+
+        docs = session.exec(
+            select(Document)
+            .where(*conditions)
+            .order_by(Document.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+
         doc_payload = [_doc_to_response(d) for d in docs]
     return {"total": total, "page": page, "page_size": page_size, "documents": doc_payload}
 

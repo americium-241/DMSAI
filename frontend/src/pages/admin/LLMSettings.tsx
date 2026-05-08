@@ -26,6 +26,10 @@ const LLM_SETTING_KEYS = new Set([
   'entity_name_match_high',
   'entity_name_match_low',
   'entity_llm_confirm_min',
+  // Embedding
+  'embedding_enabled',
+  'embedding_provider',
+  'embedding_model',
 ]);
 
 const CATEGORY_META: Record<string, { label: string; description: string; order: number }> = {
@@ -34,6 +38,7 @@ const CATEGORY_META: Record<string, { label: string; description: string; order:
   ocr: { label: 'OCR Vision', description: 'Vision model and OCR prompt settings.', order: 2 },
   classification: { label: 'LLM Classification Controls', description: 'Canonical category creation and classification thresholds used by the LLM classifier.', order: 3 },
   entity_resolution: { label: 'Entity Resolution', description: 'Entity matching thresholds and LLM confirmation settings.', order: 4 },
+  embedding: { label: 'Embeddings', description: 'Semantic vector embeddings for documents and entities. Uses the same base URL as the chosen provider. Recommended model: nomic-embed-text (Ollama) or text-embedding-3-small (LiteLLM/OpenAI).', order: 5 },
 };
 
 const KEY_SERVICES: Record<string, string[]> = {
@@ -59,6 +64,9 @@ const KEY_SERVICES: Record<string, string[]> = {
   entity_name_match_high: ['entity_resolution'],
   entity_name_match_low: ['entity_resolution'],
   entity_llm_confirm_min: ['entity_resolution'],
+  embedding_enabled: ['ocr', 'entity_resolution'],
+  embedding_provider: ['ocr', 'entity_resolution'],
+  embedding_model: ['ocr', 'entity_resolution'],
 };
 
 function isSensitive(key: string) {

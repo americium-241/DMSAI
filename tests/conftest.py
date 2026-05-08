@@ -106,6 +106,9 @@ entity_extraction_logic = _load_module("entity_extraction_logic", _node_src("ent
 entity_resolution_logic = _load_module("entity_resolution_logic", _node_src("entity_resolution_node", "entity_resolution_logic.py"))
 field_extraction_logic = _load_module("field_extraction_logic", _node_src("field_extraction_node", "field_extraction_logic.py"))
 
+# Ensure dmsai_models.embedding is importable (it's a shared module)
+import dmsai_models.embedding as _embedding_mod  # noqa: F401 — registers the module
+
 # OCR node uses relative imports (.vllm_engine) – load as a package
 _ocr_node_dir = str(PROJECT_ROOT / "nodes" / "ocr_node")
 if _ocr_node_dir not in sys.path:
@@ -180,6 +183,7 @@ from fixtures.mock_responses import (  # noqa: E402
     MOCK_CANONICAL_MAP_NEW,
     MOCK_ENTITY_RESOLUTION_SAME,
     MOCK_ENTITY_RESOLUTION_DIFFERENT,
+    MOCK_EMBEDDING_VECTOR,
     make_llm_side_effect,
 )
 
@@ -235,3 +239,23 @@ def mock_llm_field_extraction():
         side_effect=make_llm_side_effect(responses),
     ) as m:
         yield m
+
+
+# ---------------------------------------------------------------------------
+# 6. Embedding mock — autouse so no existing test needs changes
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def mock_embedding_disabled():
+    """Ensure call_embedding always returns None in tests unless overridden.
+
+    Embedding is disabled by default (embedding_enabled = "false") so this
+    fixture is a safety net: even if a test runs against a DB that has
+    embedding_enabled = "true", no real HTTP call is made.
+
+    Tests that specifically exercise embedding behaviour should override by
+    patching dmsai_models.embedding.call_embedding with a non-None return.
+    """
+    import dmsai_models.embedding as _emb
+    with patch.object(_emb, "call_embedding", new_callable=AsyncMock, return_value=None):
+        yield

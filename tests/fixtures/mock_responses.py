@@ -1,7 +1,18 @@
-"""Shared LLM mock response constants used across node and integration tests."""
+"""Shared LLM and embedding mock response constants used across node and integration tests."""
 from __future__ import annotations
 
 import json
+
+# ---------------------------------------------------------------------------
+# Embedding mocks
+# ---------------------------------------------------------------------------
+
+# 8-dimensional unit-normalised mock vector — small enough to be fast in tests
+# but large enough to exercise the cosine similarity path.
+MOCK_EMBEDDING_VECTOR: list[float] = [0.1, 0.2, 0.3, 0.4, -0.1, -0.2, -0.3, -0.4]
+
+# A second distinct vector (orthogonal to the first on the first 4 dims)
+MOCK_EMBEDDING_VECTOR_B: list[float] = [-0.4, 0.3, -0.2, 0.1, 0.4, -0.3, 0.2, -0.1]
 
 MOCK_CLASSIFICATION_RESPONSE = json.dumps({
     "category": "invoice",

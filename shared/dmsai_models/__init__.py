@@ -24,6 +24,9 @@ from .models import (
     EntityComment,
     DocumentAuditLog,
     DocumentVersion,
+    LLMUsage,
+    DocumentEmbedding,
+    EntityEmbedding,
 )
 from .connection import get_engine, get_session, init_db
 from .pipeline_events import record_pipeline_event
@@ -32,6 +35,15 @@ from .confidence import (
     compute_pipeline_confidence,
     confidence_level,
     classification_margin,
+)
+from .embedding import (
+    call_embedding,
+    cosine_similarity,
+    document_embedding_text,
+    entity_embedding_text,
+    store_document_embedding,
+    store_entity_embedding,
+    load_entity_embeddings,
 )
 
 __all__ = [
@@ -60,6 +72,9 @@ __all__ = [
     "EntityComment",
     "DocumentAuditLog",
     "DocumentVersion",
+    "LLMUsage",
+    "DocumentEmbedding",
+    "EntityEmbedding",
     "get_engine",
     "get_session",
     "init_db",
@@ -68,4 +83,11 @@ __all__ = [
     "compute_pipeline_confidence",
     "confidence_level",
     "classification_margin",
+    "call_embedding",
+    "cosine_similarity",
+    "document_embedding_text",
+    "entity_embedding_text",
+    "store_document_embedding",
+    "store_entity_embedding",
+    "load_entity_embeddings",
 ]

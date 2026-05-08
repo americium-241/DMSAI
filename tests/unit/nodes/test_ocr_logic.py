@@ -5,12 +5,12 @@ from __future__ import annotations
 import base64
 import io
 import sys
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from PIL import Image
 
-from dmsai_models import Document, get_session, init_db
+from dmsai_models import Document, DocumentEmbedding, get_session, init_db
 
 ocr_logic = sys.modules.get("ocr_src.ocr_logic")
 ingestion_logic = sys.modules["ingestion_logic"]
@@ -134,4 +134,78 @@ class TestOcrProcessDocument:
         ):
             result = await ocr_logic.process_document(payload)
 
+        assert "ocr_completed" in result["history"]
+
+
+# ---------------------------------------------------------------------------
+# Embedding integration tests (embedding enabled path)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(ocr_logic is None, reason="OCR module not loaded")
+class TestOcrEmbedding:
+    """Verify that ocr_logic stores a DocumentEmbedding when embedding is on."""
+
+    @pytest.mark.asyncio
+    async def test_document_embedding_stored_when_enabled(self):
+        """When call_embedding returns a vector, it is persisted in DocumentEmbedding."""
+        import dmsai_models.embedding as _emb
+        from fixtures.mock_responses import MOCK_EMBEDDING_VECTOR
+
+        payload = await _make_stored_payload()
+        doc_id = payload["workflow_id"]
+
+        # Override the autouse mock: return a real vector for this test
+        with patch.object(_emb, "call_embedding", new_callable=AsyncMock, return_value=MOCK_EMBEDDING_VECTOR), \
+             patch.object(sys.modules.get("ocr_src.ocr_logic"), "run_vision_llm",
+                          new_callable=AsyncMock, return_value="Invoice text here"):
+            await ocr_logic.process_document(payload)
+
+        with get_session() as session:
+            emb = session.exec(
+                __import__("sqlmodel", fromlist=["select"]).select(DocumentEmbedding)
+                .where(DocumentEmbedding.document_id == doc_id)
+            ).first()
+
+        assert emb is not None, "DocumentEmbedding row expected"
+        import json
+        stored_vec = json.loads(emb.vector)
+        assert stored_vec == MOCK_EMBEDDING_VECTOR
+
+    @pytest.mark.asyncio
+    async def test_no_embedding_stored_when_disabled(self):
+        """When call_embedding returns None (disabled), no DocumentEmbedding row is written."""
+        import dmsai_models.embedding as _emb
+        from sqlmodel import select as _select
+
+        payload = await _make_stored_payload()
+        doc_id = payload["workflow_id"]
+
+        # autouse fixture already returns None — just confirm no row is created
+        with patch.object(sys.modules.get("ocr_src.ocr_logic"), "run_vision_llm",
+                          new_callable=AsyncMock, return_value="Some text"):
+            await ocr_logic.process_document(payload)
+
+        with get_session() as session:
+            count = session.exec(
+                _select(DocumentEmbedding).where(DocumentEmbedding.document_id == doc_id)
+            ).first()
+
+        assert count is None, "No DocumentEmbedding row expected when embedding is disabled"
+
+    @pytest.mark.asyncio
+    async def test_pipeline_succeeds_when_embedding_raises(self):
+        """A crashing embedding call must NOT fail the OCR pipeline stage."""
+        import dmsai_models.embedding as _emb
+
+        payload = await _make_stored_payload()
+
+        async def _crash(*args, **kwargs):
+            raise RuntimeError("embedding service unreachable")
+
+        with patch.object(_emb, "call_embedding", side_effect=_crash), \
+             patch.object(sys.modules.get("ocr_src.ocr_logic"), "run_vision_llm",
+                          new_callable=AsyncMock, return_value="Recovered text"):
+            result = await ocr_logic.process_document(payload)
+
+        assert result["ocr_text"] == "Recovered text"
         assert "ocr_completed" in result["history"]

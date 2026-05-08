@@ -234,9 +234,24 @@ export default function ArchiveManagement() {
           </button>
           {compactResult && (
             <div className="text-xs text-gray-400 bg-gray-800/50 rounded-lg px-3 py-2 space-y-1">
-              <div><span className="text-cyan-400 font-medium">{compactResult.compressed.length}</span> compressed</div>
-              <div><span className="text-gray-500">{compactResult.already_done.length}</span> already compressed</div>
-              {compactResult.skipped.length > 0 && <div><span className="text-yellow-400">{compactResult.skipped.length}</span> skipped (missing files)</div>}
+              {compactResult.status === 'disabled' ? (
+                <div className="text-yellow-500">Compaction is disabled (retention = 0 or compression off)</div>
+              ) : (
+                <>
+                  {compactResult.cutoff && (
+                    <div className="text-gray-500">
+                      Eligible: archived before <span className="text-white">{new Date(compactResult.cutoff).toLocaleDateString()}</span>
+                      <span className="ml-1">({compactResult.retention_days}d retention)</span>
+                    </div>
+                  )}
+                  <div><span className="text-cyan-400 font-medium">{compactResult.compressed.length}</span> compressed</div>
+                  <div><span className="text-gray-500">{compactResult.already_done.length}</span> already compressed</div>
+                  {compactResult.skipped.length > 0 && <div><span className="text-yellow-400">{compactResult.skipped.length}</span> skipped (missing files)</div>}
+                  {compactResult.compressed.length === 0 && compactResult.already_done.length === 0 && (
+                    <div className="text-gray-600 italic">No archived documents older than {compactResult.retention_days} days found.</div>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>
@@ -254,8 +269,19 @@ export default function ArchiveManagement() {
           </button>
           {purgeResult && (
             <div className="text-xs text-gray-400 bg-gray-800/50 rounded-lg px-3 py-2 space-y-1">
-              <div>Retention: <span className="text-white font-medium">{purgeResult.trash_retention_days} days</span></div>
-              <div><span className={`font-medium ${purgeResult.candidates.length > 0 ? 'text-red-400' : 'text-green-400'}`}>{purgeResult.candidates.length}</span> overdue</div>
+              {purgeResult.status === 'disabled' ? (
+                <div className="text-yellow-500">Trash purge is disabled (retention = 0)</div>
+              ) : (
+              <>
+              <div>
+                Retention: <span className="text-white font-medium">{purgeResult.trash_retention_days} days</span>
+                {purgeResult.cutoff && (
+                  <span className="ml-2 text-gray-600">— eligible if trashed before <span className="text-gray-400">{new Date(purgeResult.cutoff).toLocaleDateString()}</span></span>
+                )}
+              </div>
+              <div><span className={`font-medium ${purgeResult.candidates.length > 0 ? 'text-red-400' : 'text-green-400'}`}>{purgeResult.candidates.length}</span> overdue
+                {purgeResult.candidates.length === 0 && <span className="text-gray-600 italic ml-1">(no documents in trash older than {purgeResult.trash_retention_days} days)</span>}
+              </div>
               {purgeResult.candidates.map(c => (
                 <div key={c.id} className="flex items-center justify-between py-0.5">
                   <span className="text-gray-300 truncate">{c.filename}</span>
@@ -266,6 +292,8 @@ export default function ArchiveManagement() {
                   </button>
                 </div>
               ))}
+              </>
+              )}
             </div>
           )}
         </div>

@@ -351,6 +351,63 @@ class PipelineEvent(SQLModel, table=True):
     details: Optional[str] = Field(default=None)
 
 
+class LLMUsage(SQLModel, table=True):
+    """Per-call LLM token consumption record.
+
+    Populated automatically by dmsai_models.llm every time call_llm() or
+    call_vision_llm() is invoked.  No foreign-key on document_id so that
+    analytics survive document deletion.
+    """
+
+    id: str = Field(primary_key=True)
+    provider: str = Field(index=True)               # "ollama" | "litellm"
+    model: str = Field(index=True)
+    stage: str = Field(default="unknown", index=True)  # pipeline stage name
+    call_type: str = Field(default="text")          # "text" | "vision"
+    prompt_tokens: int = Field(default=0)
+    completion_tokens: int = Field(default=0)
+    total_tokens: int = Field(default=0)
+    document_id: Optional[str] = Field(default=None, index=True)  # no FK
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+# ---------------------------------------------------------------------------
+# Embedding storage
+# ---------------------------------------------------------------------------
+
+class DocumentEmbedding(SQLModel, table=True):
+    """Semantic vector for a full document (computed from OCR text).
+
+    The *vector* column stores a JSON-serialised list[float].  Using TEXT
+    keeps the schema portable across SQLite and PostgreSQL; a migration to
+    pgvector VECTOR(dim) can be applied when moving to Postgres.
+    """
+
+    id: str = Field(primary_key=True)
+    document_id: str = Field(foreign_key="document.id", index=True)
+    embedding_type: str = Field(default="document", index=True)  # "document"
+    model: str = Field(default="", index=True)                   # model name that produced this vector
+    vector: str = Field(default="")                              # JSON list[float]
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: Optional[datetime] = Field(default=None)
+
+
+class EntityEmbedding(SQLModel, table=True):
+    """Semantic vector for a resolved entity.
+
+    Used by the entity-resolution node to rank candidates by cosine
+    similarity *before* the LLM comparison step, reducing token spend
+    without altering the resolution algorithm.
+    """
+
+    id: str = Field(primary_key=True)
+    entity_id: str = Field(foreign_key="entity.id", index=True)
+    model: str = Field(default="", index=True)
+    vector: str = Field(default="")  # JSON list[float]
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: Optional[datetime] = Field(default=None)
+
+
 # ---------------------------------------------------------------------------
 # System configuration
 # ---------------------------------------------------------------------------

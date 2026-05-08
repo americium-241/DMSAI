@@ -75,11 +75,12 @@ export default function DocumentsPage() {
   const [total, setTotal]           = useState(0);
   const [page, setPage]             = useState(1);
   const [loading, setLoading]       = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // — browse (no query) mode -------------------------------------------------
-  const loadBrowse = useCallback(async (p = 1) => {
-    setLoading(true);
+  const loadBrowse = useCallback(async (p = 1, append = false) => {
+    if (append) setLoadingMore(true); else setLoading(true);
     try {
       const params: Record<string, string> = { page: String(p), page_size: String(PAGE_SIZE) };
       if (statusFilter)   params.status         = statusFilter;
@@ -87,11 +88,11 @@ export default function DocumentsPage() {
       if (lifecycleFilter === 'archived') params.archived = 'true';
       if (lifecycleFilter === 'trashed')  params.trashed  = 'true';
       const res = await api.getDocuments(params);
-      setBrowseDocs(res.documents);
+      setBrowseDocs(prev => append ? [...prev, ...res.documents] : res.documents);
       setResults([]);
       setTotal(res.total);
     } finally {
-      setLoading(false);
+      if (append) setLoadingMore(false); else setLoading(false);
     }
   }, [statusFilter, classFilter, lifecycleFilter]);
 
@@ -161,9 +162,16 @@ export default function DocumentsPage() {
     else         loadBrowse(p);
   };
 
+  const loadMore = () => {
+    const next = page + 1;
+    setPage(next);
+    loadBrowse(next, true);
+  };
+
   const hasActiveFacets = !!(statusFilter || classFilter || lifecycleFilter);
   const totalPages = Math.ceil(total / PAGE_SIZE);
   const isSearchMode = !!activeQ;
+  const hasMore = !isSearchMode && browseDocs.length < total;
 
   return (
     <div className="space-y-5">
@@ -369,8 +377,24 @@ export default function DocumentsPage() {
         </table>
       </div>
 
-      {/* Pagination */}
-      {totalPages > 1 && (
+      {/* Browse mode — Load More */}
+      {!isSearchMode && hasMore && (
+        <div className="flex flex-col items-center gap-1.5">
+          <button
+            onClick={loadMore}
+            disabled={loadingMore}
+            className="px-6 py-2 rounded-xl bg-gray-800 border border-gray-700 text-gray-300 text-sm hover:bg-gray-700 disabled:opacity-50 transition-colors"
+          >
+            {loadingMore ? 'Loading…' : 'Load more'}
+          </button>
+          <span className="text-xs text-gray-600">
+            Showing {browseDocs.length} of {total.toLocaleString()}
+          </span>
+        </div>
+      )}
+
+      {/* Search mode — Prev / Next pagination */}
+      {isSearchMode && totalPages > 1 && (
         <div className="flex items-center justify-center gap-3">
           <button onClick={() => goPage(Math.max(1, page - 1))} disabled={page === 1}
             className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 text-sm hover:bg-gray-700 disabled:opacity-40 transition-colors">

@@ -248,6 +248,8 @@ export interface ArchiveListResponse {
 
 export interface CompactResult {
   status: string;
+  retention_days: number;
+  cutoff: string | null;
   compressed: string[];
   already_done: string[];
   skipped: string[];
@@ -256,6 +258,7 @@ export interface CompactResult {
 export interface PurgeTrashResult {
   status: string;
   trash_retention_days: number;
+  cutoff: string | null;
   candidates: { id: string; filename: string; trashed_at: string }[];
 }
 
@@ -429,6 +432,25 @@ export interface QualityMetrics {
     corrected_by_name: string;
     created_at: string;
   }[];
+}
+
+export interface GlobalIngestion {
+  total_documents: number;
+  daily_counts: { date: string; count: number }[];
+  status_breakdown: Record<string, number>;
+  per_org: { org_id: string; org_name: string; count: number }[];
+  top_classifications: { label: string; count: number }[];
+  days: number;
+}
+
+export interface LLMUsageStats {
+  total: { prompt_tokens: number; completion_tokens: number; total_tokens: number; calls: number };
+  period: { days: number; prompt_tokens: number; completion_tokens: number; total_tokens: number; calls: number };
+  by_provider: { provider: string; total_tokens: number; calls: number }[];
+  by_model: { model: string; total_tokens: number; calls: number }[];
+  by_stage: { stage: string; total_tokens: number; calls: number }[];
+  by_call_type: { call_type: string; total_tokens: number; calls: number }[];
+  daily_tokens: { date: string; prompt_tokens: number; completion_tokens: number; calls: number }[];
 }
 
 export interface PipelineEventItem {
@@ -833,6 +855,14 @@ export const api = {
 
   getQualityMetrics() {
     return request<QualityMetrics>('/admin/quality-metrics');
+  },
+
+  getGlobalIngestion(days = 30) {
+    return request<GlobalIngestion>(`/admin/global-ingestion?days=${days}`);
+  },
+
+  getLLMUsageStats(days = 30) {
+    return request<LLMUsageStats>(`/admin/llm-usage?days=${days}`);
   },
 
   getEntityRelationships(entityId: string) {

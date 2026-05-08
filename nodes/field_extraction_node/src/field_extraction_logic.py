@@ -71,9 +71,9 @@ def _truncate(text: str, max_chars: int = 8000) -> str:
     return text[:max_chars] + "\n...[truncated]"
 
 
-async def _call_llm(prompt: str) -> str:
+async def _call_llm(prompt: str, document_id: str | None = None) -> str:
     from dmsai_models.llm import call_llm
-    return await call_llm(prompt)
+    return await call_llm(prompt, stage="field_extraction", document_id=document_id)
 
 
 def _config_value(key: str, default: str) -> str:
