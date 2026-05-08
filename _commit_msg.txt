@@ -1,0 +1,33 @@
+feat: first-time setup wizard for new installations
+
+Add a guided 4-step wizard that runs automatically on a fresh DMSAI install
+(no users in the database) and walks the administrator through:
+
+  Step 1 - Account & Organisation: org name, admin email/password
+            calls POST /api/auth/register, stores JWT via auth context
+  Step 2 - LLM Provider: Ollama (local) or LiteLLM/Cloud toggle
+            configures llm_provider, ollama_base_url, llm_model, litellm_* keys
+            optional test-connection button against pipeline health
+  Step 3 - Ingestion Source (skippable): watch a directory or IMAP inbox
+            creates OrgIngestionConfig via existing admin API
+  Step 4 - Ready: marks setup_completed=true in SystemConfig
+            quick-action cards to upload, dashboard, or LLM settings
+
+Detection / routing:
+- New public endpoint GET /api/setup/status (no auth) returns
+  { completed, has_users, llm_configured }
+- "completed" is true when setup_completed=true OR users already exist
+  (handles pre-existing installations gracefully - no forced redirect)
+- App.tsx checks status on load; redirects to /setup only on truly
+  fresh installs (has_users=false, completed=false)
+- /setup route is public; SetupPage self-redirects to / if already complete
+- All existing routes and auth flows are unchanged
+
+Files added:
+  api_gateway/routers/setup.py
+  frontend/src/pages/Setup.tsx
+
+Files modified:
+  api_gateway/main.py  (register setup router)
+  frontend/src/App.tsx (add /setup route + first-run effect)
+  frontend/src/api.ts  (add getSetupStatus())

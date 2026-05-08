@@ -1,8 +1,10 @@
-import { Routes, Route, Navigate, Outlet } from 'react-router-dom';
+import { Routes, Route, Navigate, Outlet, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './auth';
 import Layout from './components/Layout';
 import { ToastProvider } from './components/Toast';
 import LoginPage from './pages/Login';
+import SetupPage from './pages/Setup';
 import DashboardPage from './pages/Dashboard';
 import UploadPage from './pages/Upload';
 import DocumentsPage from './pages/Documents';
@@ -20,6 +22,7 @@ import EntityDetailPage from './pages/admin/EntityDetail';
 import ArchiveManagementPage from './pages/admin/ArchiveManagement';
 import EntityDirectoryPage from './pages/EntityDirectory';
 import ActivityPage from './pages/Activity';
+import { api } from './api';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -36,11 +39,38 @@ function RequireRole({ roles }: { roles: string[] }) {
 
 function AppRoutes() {
   const { user, loading } = useAuth();
-  if (loading) return <div className="min-h-screen bg-gray-950 flex items-center justify-center text-gray-500">Loading...</div>;
+  const navigate = useNavigate();
+  const [setupChecked, setSetupChecked] = useState(false);
+
+  // Check first-run status once (before auth resolves) so we redirect before
+  // the normal login redirect kicks in.
+  useEffect(() => {
+    if (loading) return;
+    // Skip check if user is already authenticated (setup must have run before)
+    if (user) { setSetupChecked(true); return; }
+
+    api.getSetupStatus().then(status => {
+      if (!status.completed) {
+        navigate('/setup', { replace: true });
+      }
+    }).catch(() => {
+      // If the check fails (network / backend not ready) just proceed normally
+    }).finally(() => {
+      setSetupChecked(true);
+    });
+  }, [loading, user]);
+
+  if (loading || !setupChecked) {
+    return <div className="min-h-screen bg-gray-950 flex items-center justify-center text-gray-500">Loading...</div>;
+  }
 
   return (
     <Routes>
+      {/* Public routes — /setup manages its own redirect logic internally */}
+      <Route path="/setup" element={<SetupPage />} />
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
+
+      {/* Protected routes */}
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route path="/" element={<DashboardPage />} />
         <Route path="/documents" element={<DocumentsPage />} />

@@ -531,7 +531,18 @@ export interface RelatedDocumentsResponse {
 // API client
 // ---------------------------------------------------------------------------
 
+export interface SetupStatus {
+  completed: boolean;
+  has_users: boolean;
+  llm_configured: boolean;
+}
+
 export const api = {
+  // Setup (public — no auth required)
+  getSetupStatus() {
+    return fetch('/api/setup/status').then(r => r.json() as Promise<SetupStatus>);
+  },
+
   // Auth
   login(email: string, password: string) {
     return request<AuthResponse>('/auth/login', {

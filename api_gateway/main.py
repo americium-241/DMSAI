@@ -135,7 +135,9 @@ from routers.dashboard import router as dashboard_router
 from routers.admin import router as admin_router
 from routers.collaboration import router as collaboration_router
 from routers.archive import router as archive_router
+from routers.setup import router as setup_router
 
+app.include_router(setup_router)   # public — no auth required
 app.include_router(users_router)
 app.include_router(documents_router)
 app.include_router(buckets_router)
