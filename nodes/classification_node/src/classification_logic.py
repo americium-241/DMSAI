@@ -118,7 +118,9 @@ def _normalize_label(label: str) -> str:
     return label or "other"
 
 
-def _parse_json_object(raw: str) -> dict:
+def _parse_json_object(raw: str | None) -> dict:
+    if not raw:
+        return {}
     raw = raw.strip()
     if raw.startswith("```"):
         lines = [line for line in raw.splitlines() if not line.strip().startswith("```")]

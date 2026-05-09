@@ -47,15 +47,20 @@ class TestLogin:
 
 
 class TestRegister:
-    def test_register_to_existing_org_as_user(self, gw_client, gw_org_and_users):
-        """Non-first users who provide a valid org name join as 'user' role."""
-        # Find the org name created by the conftest fixture
+    """Self-service registration is CLOSED by default.
+
+    The only exceptions are:
+    - the very first user (zero users in the DB) — bootstrap path
+    - SystemConfig.registration_open == 'true' — explicitly re-opened
+    """
+
+    def test_register_blocked_when_users_exist(self, gw_client, gw_org_and_users):
+        """With registration closed (default) and any user already in DB, register returns 403."""
         resp = gw_client.get(
             "/api/organization",
             headers={"Authorization": f"Bearer {gw_org_and_users['admin_token']}"},
         )
         org_name = resp.json()["name"]
-
         new_email = f"selfregister-{uuid.uuid4().hex[:8]}@test.com"
         reg = gw_client.post("/api/auth/register", json={
             "email": new_email,
@@ -63,35 +68,33 @@ class TestRegister:
             "full_name": "Self Registered",
             "organization_name": org_name,
         })
-        # Either 200 (joined) or 403 (registration closed) — both are valid
-        assert reg.status_code in (200, 403)
-        if reg.status_code == 200:
-            data = reg.json()
-            assert data["user"]["role"] == "user", "Self-registered users must not be admins"
-            assert data["user"]["organization_id"] == gw_org_and_users["org_id"]
+        assert reg.status_code == 403, "Registration must be closed by default for non-first users"
+        assert "administrator" in reg.json()["detail"].lower() or "invitation" in reg.json()["detail"].lower()
 
-    def test_register_to_nonexistent_org_fails(self, gw_client):
-        """Registering with an org name that does not exist must return 404."""
-        new_email = f"noorg-{uuid.uuid4().hex[:8]}@test.com"
+    def test_register_to_nonexistent_org_blocked(self, gw_client, gw_org_and_users):
+        """Even with a non-existent org, registration is blocked when closed."""
         resp = gw_client.post("/api/auth/register", json={
-            "email": new_email,
+            "email": f"noorg-{uuid.uuid4().hex[:8]}@test.com",
             "password": "SecurePass1",
             "full_name": "No Org User",
             "organization_name": f"NonExistentOrg-{uuid.uuid4().hex}",
         })
-        # 404 = org not found; 403 = registration closed; both are correct
-        assert resp.status_code in (404, 403)
+        assert resp.status_code == 403
 
-    def test_register_duplicate_email_fails(self, gw_client, gw_org_and_users):
+    def test_register_duplicate_email_returns_409(self, gw_client, gw_org_and_users):
+        """Duplicate email is detected before the closed-registration gate so
+        existing users can't be enumerated by attackers checking for 403 vs 409."""
         resp = gw_client.post("/api/auth/register", json={
             "email": gw_org_and_users["admin_email"],
             "password": "SecurePass1",
             "full_name": "Duplicate",
             "organization_name": "SomeOrg",
         })
-        assert resp.status_code in (409, 403)
+        assert resp.status_code == 409
 
-    def test_register_weak_password_rejected(self, gw_client):
+    def test_register_weak_password_rejected_before_close_gate(self, gw_client, gw_org_and_users):
+        """Password validation runs before the closed-registration check, so weak
+        passwords always return 400 regardless of the registration_open flag."""
         resp = gw_client.post("/api/auth/register", json={
             "email": f"weak-{uuid.uuid4().hex[:8]}@test.com",
             "password": "weak",
@@ -100,15 +103,14 @@ class TestRegister:
         })
         assert resp.status_code == 400
 
-    def test_register_without_org_name_fails(self, gw_client):
-        """Non-first users must always provide an organization_name."""
+    def test_register_without_org_name_blocked(self, gw_client, gw_org_and_users):
         resp = gw_client.post("/api/auth/register", json={
             "email": f"noname-{uuid.uuid4().hex[:8]}@test.com",
             "password": "SecurePass1",
             "full_name": "No Org Name",
         })
-        # 400 = org name required; 403 = registration closed
-        assert resp.status_code in (400, 403)
+        assert resp.status_code == 403
+
 
 
 class TestGetMe:

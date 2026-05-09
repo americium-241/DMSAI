@@ -88,7 +88,9 @@ def _config_value(key: str, default: str) -> str:
     return default
 
 
-def _parse_json_array(raw: str) -> list[str]:
+def _parse_json_array(raw: str | None) -> list[str]:
+    if not raw:
+        return []
     raw = raw.strip()
     if raw.startswith("```"):
         lines = raw.split("\n")
@@ -109,7 +111,9 @@ def _parse_json_array(raw: str) -> list[str]:
     return []
 
 
-def _parse_json_object(raw: str) -> dict:
+def _parse_json_object(raw: str | None) -> dict:
+    if not raw:
+        return {}
     raw = raw.strip()
     if raw.startswith("```"):
         lines = raw.split("\n")
@@ -288,6 +292,8 @@ async def _normalize_field_names(
         )
         try:
             raw = await _call_llm(prompt)
+            if not raw:
+                continue
             raw = raw.strip()
             parsed = _parse_json_object(raw)
 

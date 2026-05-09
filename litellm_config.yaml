@@ -1,12 +1,11 @@
-model_list:
-  - model_name: "gemini/gemini-3-flash-preview"
-    litellm_params:
-      model: "gemini/gemini-3-flash-preview"
-      api_key: "os.environ/GEMINI_API_KEY"
-  - model_name: "gemini/gemini-embedding-001"
-    litellm_params:
-      model: "gemini/gemini-embedding-001"
-      api_key: "os.environ/GEMINI_API_KEY"
-
 general_settings:
   drop_params: true
+model_list:
+- litellm_params:
+    api_key: os.environ/GEMINI_API_KEY
+    model: gemini/gemini-3.1-flash-lite
+  model_name: gemini/gemini-3.1-flash-lite
+- litellm_params:
+    api_key: os.environ/GEMINI_API_KEY
+    model: gemini/gemini-embedding-001
+  model_name: gemini/gemini-embedding-001

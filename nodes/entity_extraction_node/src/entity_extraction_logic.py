@@ -57,8 +57,10 @@ def _config_value(key: str, default: str) -> str:
     return default
 
 
-def _parse_entities_json(raw: str) -> list[dict]:
+def _parse_entities_json(raw: str | None) -> list[dict]:
     """Attempt to extract a JSON array from the LLM response."""
+    if not raw:
+        return []
     raw = raw.strip()
     if raw.startswith("```"):
         lines = raw.split("\n")

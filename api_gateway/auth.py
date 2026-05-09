@@ -60,8 +60,13 @@ def is_email_verification_enabled() -> bool:
 
 
 def is_registration_open() -> bool:
+    """Whether self-service /auth/register is open to non-bootstrap users.
+
+    Defaults to ``false`` (closed) when the SystemConfig row is missing —
+    i.e. the secure default.  Admins flip it via the General Settings page.
+    """
     cfg = _get_auth_config()
-    return cfg.get("registration_open", "true").lower() == "true"
+    return cfg.get("registration_open", "false").lower() == "true"
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +199,67 @@ async def require_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
-async def require_manager(user: User = Depends(get_current_user)) -> User:
-    if user.role not in ("admin", "manager"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager or admin access required")
+# ---------------------------------------------------------------------------
+# Role canonicalization.
+#
+# Phase 4 introduced two role changes that we keep backwards-compatible:
+#   - `manager`  -> renamed to `org_admin`
+#   - `viewer`   -> new read-only role
+# JWTs already in flight may still carry `manager`, and old DB rows are
+# updated lazily by the init_db migration.  These helpers normalize the
+# input so call sites only deal with the new names.
+# ---------------------------------------------------------------------------
+
+#: Roles accepted as input via API payloads (request body validation).
+VALID_ROLES = ("admin", "org_admin", "user", "viewer")
+
+#: Roles that satisfy require_org_admin.  Includes legacy "manager" for
+#: stale JWTs issued before the rename.
+ORG_ADMIN_ROLES = ("admin", "org_admin", "manager")
+
+
+def normalize_role(role: str | None) -> str:
+    """Translate legacy/alias role names to canonical form.
+
+    - ``manager`` -> ``org_admin`` (Phase 4 rename)
+    - empty -> ``user`` (default)
+    - anything else: returned unchanged so callers can reject it via
+      ``role not in VALID_ROLES`` and produce a 400 with the user's input.
+    """
+    if not role:
+        return "user"
+    if role == "manager":
+        return "org_admin"
+    return role
+
+
+async def require_org_admin(user: User = Depends(get_current_user)) -> User:
+    """Allow `admin` (system) or `org_admin` (org-scoped admin).
+
+    `org_admin` replaces the legacy `manager` role.  For a transitional
+    period we still accept `manager` so JWTs issued before the rename
+    keep working until they expire.
+    """
+    if user.role not in ORG_ADMIN_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Org-admin or admin access required",
+        )
+    return user
+
+
+# Backwards-compat alias so existing imports keep working until we sweep them
+require_manager = require_org_admin
+
+
+async def require_viewer(user: User = Depends(get_current_user)) -> User:
+    """Allow any logged-in user — viewers, members, org_admins, admins.
+
+    Used for read-only endpoints to make intent explicit.  ``get_current_user``
+    is already enforced by the dependency chain, so this is currently a
+    semantic alias; future tightening (e.g. blocking deactivated accounts
+    differently per endpoint) goes here.
+    """
+    if normalize_role(user.role) not in VALID_ROLES:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Authentication required")
     return user

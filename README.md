@@ -6,7 +6,7 @@ DMSAI is a **self-hosted**, **LLM-powered** document intelligence platform built
 
 [![Pipeline](https://img.shields.io/badge/pipeline-LLM--powered-blueviolet)](#feature-showcase)
 [![API](https://img.shields.io/badge/API-Swagger%20%2F%20OpenAPI-green)](http://localhost:8080/docs)
-[![Stack](https://img.shields.io/badge/stack-FastAPI%20%7C%20React%20%7C%20SQLite-blue)](#architecture)
+[![Stack](https://img.shields.io/badge/stack-FastAPI%20%7C%20React%20%7C%20PostgreSQL-blue)](#architecture)
 
 ---
 
@@ -277,8 +277,10 @@ Two paths, same result — the app at **http://localhost:5173**.
 ```bash
 git clone https://github.com/americium-241/DMSAI.git && cd DMSAI
 cp .env.example .env        # Ollama-ready defaults; secrets auto-generated on first start
-docker compose up -d
+docker compose up -d        # spins up Postgres + all 11 DMSAI services
 ```
+
+Postgres is bundled in the compose file as the central database. Data lives in a named volume (`pg-data`).
 
 Open **http://localhost:5173** · login `admin@dmsai.com` / `admin123`
 
@@ -292,9 +294,20 @@ Open **http://localhost:5173** · login `admin@dmsai.com` / `admin123`
 
 ```bash
 git clone https://github.com/americium-241/DMSAI.git && cd DMSAI
-python scripts/install.py      # install all dependencies
+python scripts/install.py      # installs Python deps, frontend deps, and PostgreSQL natively
 python dmsai.py start          # auto-creates .env, generates secrets, starts everything
 ```
+
+The installer picks the right Postgres package manager for your OS, then provisions the `dmsai` role and database automatically:
+
+| OS | Command used |
+| --- | --- |
+| Windows | `winget install -e --id PostgreSQL.PostgreSQL.17` |
+| macOS | `brew install postgresql@17 && brew services start postgresql@17` |
+| Linux (Debian/Ubuntu) | `sudo apt install -y postgresql postgresql-contrib` |
+| Linux (Fedora/RHEL) | `sudo dnf install -y postgresql-server postgresql-contrib` |
+
+If a step fails (no admin rights, locked-down machine, etc.), the script prints the exact manual command for your platform and exits gracefully. You can also run just the database step on its own: `python scripts/postgres_setup.py`.
 
 Open **http://localhost:5173** · login `admin@dmsai.com` / `admin123`
 
@@ -303,13 +316,14 @@ Platform-specific guides: [Windows](docs/install-windows.md) · [Linux / macOS](
 #### CLI reference
 
 ```bash
-python dmsai.py setup       # first-time setup (also auto-runs on first start)
-python dmsai.py start       # start all services
-python dmsai.py stop        # stop all services
-python dmsai.py restart     # full restart
-python dmsai.py status      # show service status + URLs
-python dmsai.py logs ocr    # tail a service log
-python dmsai.py clean-db    # wipe DB + storage for a fresh start
+python scripts/install.py        # one-shot installer (Python deps + frontend + PostgreSQL)
+python dmsai.py setup            # first-time .env + secrets + Postgres provisioning (auto-runs on first start)
+python dmsai.py start            # start all services
+python dmsai.py stop             # stop all services
+python dmsai.py restart          # full restart
+python dmsai.py status           # show service status + URLs
+python dmsai.py logs ocr         # tail a service log
+python dmsai.py clean-db         # drop all tables + wipe storage for a fresh start
 ```
 
 ---
@@ -342,7 +356,7 @@ Frontend  :5173  (React + Vite + Tailwind)
 API Gateway  :8080  (FastAPI -- auth, documents, buckets, admin, Swagger)
   │
   ├─ Pipeline nodes  :8010-8018  (independent FastAPI microservices)
-  ├─ SQLite database  (shared via volume / local data/ directory)
+  ├─ PostgreSQL  :5432  (sole production DB, native or Docker)
   ├─ File storage  (data/storage/)
   └─ LiteLLM proxy  :4000  (optional -- cloud LLM routing)
 ```

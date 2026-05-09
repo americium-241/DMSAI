@@ -36,7 +36,9 @@ x-node-base: &node-base
     ENTITY_RESOLUTION_NODE_URL: http://entity_resolution:8017
     FIELD_EXTRACTION_NODE_URL: http://field_extraction:8018
     API_GATEWAY_URL: http://api_gateway:8080
-    DMSAI_DB_URL: sqlite:////app/data/dmsai.db
+    # PostgreSQL is the only supported DB.  Override via .env if you want
+    # to point at an external Postgres instance.
+    DMSAI_DB_URL: postgresql+psycopg://${POSTGRES_USER:-dmsai}:${POSTGRES_PASSWORD:-dmsai}@postgres:5432/${POSTGRES_DB:-dmsai}
     DMSAI_STORAGE_ROOT: /app/data/storage/documents
     DMSAI_INBOX_DIR: /app/data/inbox
     DMSAI_PROCESSED_DIR: /app/data/processed
@@ -49,8 +51,35 @@ x-node-base: &node-base
   networks:
     - dmsai
   restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
 
 services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — central database (the only supported DMSAI backend).
+  # MVCC concurrency, no write-lock contention between pipeline nodes.
+  # ---------------------------------------------------------------------------
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: dmsai-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dmsai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dmsai}
+      POSTGRES_DB: ${POSTGRES_DB:-dmsai}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dmsai} -d ${POSTGRES_DB:-dmsai}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - dmsai
+    restart: unless-stopped
 
   # ---------------------------------------------------------------------------
   # Pipeline nodes
@@ -142,13 +171,24 @@ services:
     command: uvicorn main:app --host 0.0.0.0 --port 8080
     ports:
       - "8080:8080"
+    # Override node-base depends_on to also wait for pipeline nodes (Postgres
+    # is still required and listed first so api_gateway only starts once the
+    # DB is ready to accept connections).
     depends_on:
-      - ingestion
-      - ocr
-      - entity_extraction
-      - classification
-      - entity_resolution
-      - field_extraction
+      postgres:
+        condition: service_healthy
+      ingestion:
+        condition: service_started
+      ocr:
+        condition: service_started
+      entity_extraction:
+        condition: service_started
+      classification:
+        condition: service_started
+      entity_resolution:
+        condition: service_started
+      field_extraction:
+        condition: service_started
 
   # ---------------------------------------------------------------------------
   # Frontend (React dev server)
@@ -249,7 +289,8 @@ services:
 # ---------------------------------------------------------------------------
 
 volumes:
-  app-data:          # database, file storage, inbox, processed
+  app-data:          # file storage, inbox, processed (DB now lives in Postgres)
+  pg-data:           # PostgreSQL data directory
   ollama-data:       # Ollama model weights
   loki-data:
   grafana-data:

@@ -233,18 +233,34 @@ class TestAdminUserManagement:
         assert data["role"] == "user"
         assert data["organization_id"] == admin["org_id"]
 
-    def test_admin_can_create_manager(self, client):
+    def test_admin_can_create_org_admin(self, client):
+        """Phase 4: ``manager`` is the legacy alias for ``org_admin``.
+
+        Admin creation accepts both names but normalizes to ``org_admin``
+        in the response and DB.
+        """
         admin = _bootstrap_admin(client)
         headers = {"Authorization": f"Bearer {admin['token']}"}
 
+        # Creating with the legacy "manager" name still works (back-compat).
         resp = client.post("/api/admin/users", headers=headers, json={
             "email": _unique_email(),
-            "password": "ManagerPass1",
-            "full_name": "New Manager",
+            "password": "OrgAdminPass1",
+            "full_name": "Legacy Manager",
             "role": "manager",
         })
         assert resp.status_code == 200
-        assert resp.json()["role"] == "manager"
+        assert resp.json()["role"] == "org_admin"
+
+        # And with the new canonical name
+        resp = client.post("/api/admin/users", headers=headers, json={
+            "email": _unique_email(),
+            "password": "OrgAdminPass2",
+            "full_name": "New Org Admin",
+            "role": "org_admin",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["role"] == "org_admin"
 
     def test_non_admin_cannot_create_user(self, client):
         from auth import create_access_token, hash_password

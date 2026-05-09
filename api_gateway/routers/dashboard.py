@@ -9,7 +9,7 @@ from sqlmodel import select, func
 from dmsai_models import (
     Document, DocumentEntity, Entity, Bucket, BucketDocument,
     User, PipelineEvent, DocumentAuditLog,
-    get_session, init_db,
+    get_session, init_db, date_str,
 )
 from auth import get_current_user
 
@@ -95,17 +95,15 @@ async def get_dashboard(
 
         # — Daily ingestion trend (last 30 days) ------------------------------
         thirty_days_ago = today_start - timedelta(days=29)
+        day_expr = date_str(Document.created_at)
         daily_rows = session.exec(
-            select(
-                func.strftime("%Y-%m-%d", Document.created_at),
-                func.count(),
-            )
+            select(day_expr, func.count())
             .where(
                 org_filter,
                 Document.created_at >= thirty_days_ago,
             )
-            .group_by(func.strftime("%Y-%m-%d", Document.created_at))
-            .order_by(func.strftime("%Y-%m-%d", Document.created_at))
+            .group_by(day_expr)
+            .order_by(day_expr)
         ).all()
         daily_map = {row[0]: row[1] for row in daily_rows}
         daily_counts = [

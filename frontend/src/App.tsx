@@ -5,6 +5,7 @@ import Layout from './components/Layout';
 import { ToastProvider } from './components/Toast';
 import LoginPage from './pages/Login';
 import SetupPage from './pages/Setup';
+import InviteRedeemPage from './pages/InviteRedeem';
 import DashboardPage from './pages/Dashboard';
 import UploadPage from './pages/Upload';
 import DocumentsPage from './pages/Documents';
@@ -49,6 +50,12 @@ function AppRoutes() {
     // Skip check if user is already authenticated (setup must have run before)
     if (user) { setSetupChecked(true); return; }
 
+    // Don't hijack invite-redeem URLs with a /setup redirect — invitations
+    // only exist after setup is complete anyway.
+    if (window.location.pathname.startsWith('/invite/')) {
+      setSetupChecked(true);
+      return;
+    }
     api.getSetupStatus().then(status => {
       if (!status.completed) {
         navigate('/setup', { replace: true });
@@ -68,6 +75,7 @@ function AppRoutes() {
     <Routes>
       {/* Public routes — /setup manages its own redirect logic internally */}
       <Route path="/setup" element={<SetupPage />} />
+      <Route path="/invite/:token" element={<InviteRedeemPage />} />
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
 
       {/* Protected routes */}
@@ -80,7 +88,7 @@ function AppRoutes() {
         <Route path="/buckets" element={<UserBucketsPage />} />
         <Route path="/buckets/:id" element={<UserBucketDetailPage />} />
         <Route path="/upload" element={<UploadPage />} />
-        <Route element={<RequireRole roles={['admin', 'manager']} />}>
+        <Route element={<RequireRole roles={['admin', 'org_admin', 'manager']} />}>
           <Route path="admin/users" element={<UsersPage />} />
           <Route path="admin/organizations" element={<OrganizationManagement />} />
           <Route path="admin/buckets" element={<BucketManagement />} />

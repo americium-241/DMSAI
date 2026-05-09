@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  FileText, Building2, User, Lock, ChevronRight, Brain, Folder,
+  FileText, Building2, ChevronRight, Brain, Folder,
   Mail, CheckCircle2, ArrowRight, Loader2, Wifi, WifiOff, SkipForward,
   Upload, LayoutDashboard, Settings,
 } from 'lucide-react';
@@ -11,7 +11,7 @@ import { useAuth } from '../auth';
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-type LLMProvider = 'ollama' | 'litellm';
+type LLMProvider = 'ollama' | 'gemini' | 'openai' | 'anthropic' | 'other';
 type IngestionType = 'directory' | 'email' | 'skip';
 
 interface StepState {
@@ -24,15 +24,17 @@ interface StepState {
 
   // Step 2 — LLM
   llmProvider: LLMProvider;
+  // Ollama
   ollamaUrl: string;
   ollamaModel: string;
-  ollamaVisionModel: string;
+  // Cloud providers (Gemini, OpenAI, Anthropic)
+  cloudApiKey: string;
+  cloudTextModel: string;
+  // Advanced (other)
   litellmUrl: string;
   litellmApiKey: string;
   litellmModel: string;
-  litellmVisionModel: string;
-
-  // Step 2 — Embedding (optional)
+  // Embedding (optional)
   embeddingEnabled: boolean;
   embeddingModel: string;
 
@@ -46,12 +48,92 @@ interface StepState {
   imapFolder: string;
 }
 
+// ---------------------------------------------------------------------------
+// Model catalogues
+// ---------------------------------------------------------------------------
+const CLOUD_PROVIDERS: {
+  id: LLMProvider;
+  label: string;
+  desc: string;
+  apiKeyLabel: string;
+  apiKeyUrl: string;
+  textModels: { id: string; label: string }[];
+  defaultEmbedding: string;
+  embedModels: { id: string; label: string }[];
+}[] = [
+  {
+    id: 'gemini',
+    label: 'Google Gemini',
+    desc: 'Fast multimodal models — handles OCR, text & embeddings',
+    apiKeyLabel: 'aistudio.google.com',
+    apiKeyUrl: 'https://aistudio.google.com/app/apikey',
+    textModels: [
+      { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash  ✦ Recommended' },
+      { id: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash Lite  ✦ Cheapest' },
+      { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash  ✦ Latest' },
+      { id: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro  ✦ Most capable' },
+    ],
+    defaultEmbedding: 'gemini-embedding-001',
+    embedModels: [
+      { id: 'gemini-embedding-001', label: 'Gemini Embedding 001' },
+    ],
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    desc: 'GPT-4o and GPT-4.1 family — best-in-class reasoning',
+    apiKeyLabel: 'platform.openai.com',
+    apiKeyUrl: 'https://platform.openai.com/api-keys',
+    textModels: [
+      { id: 'gpt-4o-mini', label: 'GPT-4o Mini  ✦ Recommended' },
+      { id: 'gpt-4o', label: 'GPT-4o  ✦ Best quality' },
+      { id: 'gpt-4.1-mini', label: 'GPT-4.1 Mini  ✦ Latest mini' },
+      { id: 'gpt-4.1', label: 'GPT-4.1  ✦ Latest best' },
+    ],
+    defaultEmbedding: 'text-embedding-3-small',
+    embedModels: [
+      { id: 'text-embedding-3-small', label: 'text-embedding-3-small  ✦ Recommended' },
+      { id: 'text-embedding-3-large', label: 'text-embedding-3-large  ✦ Best quality' },
+    ],
+  },
+  {
+    id: 'anthropic',
+    label: 'Anthropic Claude',
+    desc: 'Claude 3.5 / 3.7 — excellent for document analysis',
+    apiKeyLabel: 'console.anthropic.com',
+    apiKeyUrl: 'https://console.anthropic.com/settings/keys',
+    textModels: [
+      { id: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku  ✦ Recommended (fast)' },
+      { id: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet  ✦ Best quality' },
+      { id: 'claude-3-7-sonnet-20250219', label: 'Claude 3.7 Sonnet  ✦ Latest' },
+    ],
+    defaultEmbedding: '',
+    embedModels: [],
+  },
+];
+
+const OLLAMA_TEXT_MODELS = [
+  { id: 'gemma3:27b', label: 'gemma3:27b  ✦ Recommended (multimodal, 27B)' },
+  { id: 'gemma3:12b', label: 'gemma3:12b  ✦ Lighter (multimodal, 12B)' },
+  { id: 'gemma3:4b', label: 'gemma3:4b  ✦ Very fast (multimodal, 4B)' },
+  { id: 'llama3.2:3b', label: 'llama3.2:3b  ✦ Tiny (text only)' },
+  { id: 'qwen2.5:7b', label: 'qwen2.5:7b  ✦ Good alternative' },
+  { id: 'mistral:7b', label: 'mistral:7b  ✦ Classic' },
+];
+
+const OLLAMA_EMBED_MODELS = [
+  { id: 'nomic-embed-text', label: 'nomic-embed-text  ✦ Recommended' },
+  { id: 'mxbai-embed-large', label: 'mxbai-embed-large  ✦ Higher quality' },
+  { id: 'all-minilm', label: 'all-minilm  ✦ Very fast, small' },
+];
+
 const INITIAL: StepState = {
   orgName: '', fullName: '', email: '', password: '', confirmPassword: '',
   llmProvider: 'ollama',
-  ollamaUrl: 'http://localhost:11434', ollamaModel: 'gemma3:27b', ollamaVisionModel: '',
-  litellmUrl: 'http://localhost:4000', litellmApiKey: '', litellmModel: '', litellmVisionModel: '',
-  embeddingEnabled: false, embeddingModel: 'nomic-embed-text',
+  ollamaUrl: 'http://localhost:11434', ollamaModel: 'gemma3:27b',
+  cloudApiKey: '', cloudTextModel: '',
+  litellmUrl: 'http://localhost:4000', litellmApiKey: '', litellmModel: '',
+  embeddingEnabled: false, embeddingModel: '',
   ingestionType: 'skip',
   directoryPath: '', imapHost: '', imapPort: '993',
   imapUser: '', imapPassword: '', imapFolder: 'INBOX',
@@ -233,6 +315,79 @@ function Step1({
 // ---------------------------------------------------------------------------
 type TestResult = 'idle' | 'testing' | 'ok' | 'fail';
 
+// ---------------------------------------------------------------------------
+// Shared sub-components for Step 2
+// ---------------------------------------------------------------------------
+function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
+  return (
+    <div className="flex items-center gap-3">
+      <button
+        type="button"
+        onClick={() => onChange(!on)}
+        className={cls('relative w-10 h-5 rounded-full transition-colors shrink-0',
+          on ? 'bg-blue-600' : 'bg-gray-700')}
+      >
+        <span className={cls('absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform',
+          on ? 'translate-x-5' : 'translate-x-0.5')} />
+      </button>
+      <span className="text-sm text-gray-400">{label}</span>
+    </div>
+  );
+}
+
+function ModelSelect({
+  label, value, onChange, options, placeholder,
+}: {
+  label: React.ReactNode;
+  value: string;
+  onChange: (v: string) => void;
+  options: { id: string; label: string }[];
+  placeholder?: string;
+}) {
+  const isCustom = value !== '' && !options.find(o => o.id === value);
+  const [custom, setCustom] = useState(isCustom ? value : '');
+  const [showCustom, setShowCustom] = useState(isCustom);
+
+  const handleSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const v = e.target.value;
+    if (v === '__custom__') { setShowCustom(true); return; }
+    setShowCustom(false);
+    onChange(v);
+  };
+
+  const selectValue = showCustom ? '__custom__' : (value || '');
+
+  return (
+    <div>
+      <Label>{label}</Label>
+      <select
+        value={selectValue}
+        onChange={handleSelect}
+        className="w-full px-3.5 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+      >
+        {placeholder && <option value="" disabled>{placeholder}</option>}
+        {options.map(o => (
+          <option key={o.id} value={o.id}>{o.label}</option>
+        ))}
+        <option value="__custom__">Custom model name…</option>
+      </select>
+      {showCustom && (
+        <input
+          type="text"
+          value={custom}
+          onChange={e => { setCustom(e.target.value); onChange(e.target.value); }}
+          placeholder="Enter model name"
+          className="mt-2 w-full px-3.5 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          autoFocus
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 2 — LLM Configuration
+// ---------------------------------------------------------------------------
 function Step2({
   state, setState, onNext, onBack,
 }: {
@@ -245,35 +400,74 @@ function Step2({
   const [saving, setSaving] = useState(false);
   const [testResult, setTestResult] = useState<TestResult>('idle');
 
-  const set = (k: keyof StepState) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setState({ ...state, [k]: e.target.value });
+  const cloudDef = CLOUD_PROVIDERS.find(p => p.id === state.llmProvider);
 
-  const saveConfig = async () => {
-    if (state.llmProvider === 'ollama') {
-      await api.updateSystemConfig('llm_provider', 'ollama');
-      await api.updateSystemConfig('ollama_base_url', state.ollamaUrl);
-      await api.updateSystemConfig('llm_model', state.ollamaModel);
-      if (state.ollamaVisionModel)
-        await api.updateSystemConfig('ocr_vision_model', state.ollamaVisionModel);
-    } else {
-      await api.updateSystemConfig('llm_provider', 'litellm');
-      await api.updateSystemConfig('litellm_base_url', state.litellmUrl);
-      await api.updateSystemConfig('litellm_api_key', state.litellmApiKey);
-      if (state.litellmModel)
-        await api.updateSystemConfig('litellm_model', state.litellmModel);
-      if (state.litellmVisionModel)
-        await api.updateSystemConfig('ocr_vision_model', state.litellmVisionModel);
+  // Auto-set default model when switching provider
+  const selectProvider = (p: LLMProvider) => {
+    const def = CLOUD_PROVIDERS.find(x => x.id === p);
+    setState({
+      ...state,
+      llmProvider: p,
+      cloudTextModel: def ? def.textModels[0].id : '',
+      embeddingModel: def ? def.defaultEmbedding : (p === 'ollama' ? 'nomic-embed-text' : ''),
+    });
+  };
+
+  const buildPayload = () => {
+    const p = state.llmProvider;
+    if (p === 'ollama') {
+      return {
+        provider: 'ollama',
+        text_model: state.ollamaModel,
+        ollama_url: state.ollamaUrl,
+        embedding_enabled: state.embeddingEnabled,
+        embedding_model: state.embeddingEnabled ? state.embeddingModel : '',
+      };
     }
-    // Embedding
-    await api.updateSystemConfig('embedding_enabled', state.embeddingEnabled ? 'true' : 'false');
-    if (state.embeddingEnabled)
-      await api.updateSystemConfig('embedding_model', state.embeddingModel);
+    if (p === 'other') {
+      return {
+        provider: 'other',
+        text_model: state.litellmModel,
+        api_key: state.litellmApiKey,
+        ollama_url: state.litellmUrl,
+        embedding_enabled: state.embeddingEnabled,
+        embedding_model: state.embeddingEnabled ? state.embeddingModel : '',
+      };
+    }
+    // Cloud providers (gemini, openai, anthropic)
+    return {
+      provider: p,
+      text_model: state.cloudTextModel,
+      api_key: state.cloudApiKey,
+      embedding_enabled: state.embeddingEnabled,
+      embedding_model: state.embeddingEnabled ? state.embeddingModel : '',
+    };
+  };
+
+  const handleApply = async () => {
+    setError('');
+    setSaving(true);
+    try {
+      if (state.llmProvider !== 'ollama' && state.llmProvider !== 'other' && !state.cloudApiKey.trim()) {
+        throw new Error('API key is required for cloud providers.');
+      }
+      if (!state.cloudTextModel && state.llmProvider !== 'ollama' && state.llmProvider !== 'other') {
+        throw new Error('Please select a model.');
+      }
+      await api.applyLLMConfig(buildPayload());
+      onNext();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to save LLM settings';
+      try { setError(JSON.parse(msg).detail || msg); } catch { setError(msg); }
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleTest = async () => {
     setTestResult('testing');
     try {
-      await saveConfig();
+      await api.applyLLMConfig(buildPayload());
       const health = await api.getPipelineHealth();
       const up = Object.values(health).some((n: any) => n.status === 'ok' || n.status === 'healthy');
       setTestResult(up ? 'ok' : 'fail');
@@ -282,199 +476,194 @@ function Step2({
     }
   };
 
-  const handleNext = async () => {
-    setError('');
-    setSaving(true);
-    try {
-      await saveConfig();
-      onNext();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to save LLM settings';
-      setError(msg);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const provider = state.llmProvider;
+  const PROVIDER_CARDS: { id: LLMProvider; label: string; sublabel: string }[] = [
+    { id: 'ollama', label: 'Ollama', sublabel: 'Run locally, no API key' },
+    { id: 'gemini', label: 'Gemini', sublabel: 'Google AI — free tier available' },
+    { id: 'openai', label: 'OpenAI', sublabel: 'GPT-4o family' },
+    { id: 'anthropic', label: 'Claude', sublabel: 'Anthropic — great for docs' },
+    { id: 'other', label: 'Other', sublabel: 'LiteLLM proxy (advanced)' },
+  ];
 
   return (
     <div className="space-y-5">
-      {/* Provider toggle */}
+      {/* Provider selector */}
       <div>
-        <Label>LLM Provider</Label>
-        <div className="grid grid-cols-2 gap-3">
-          {(['ollama', 'litellm'] as LLMProvider[]).map(p => (
+        <Label>Choose your AI provider</Label>
+        <div className="grid grid-cols-5 gap-2">
+          {PROVIDER_CARDS.map(({ id, label, sublabel }) => (
             <button
-              key={p}
+              key={id}
               type="button"
-              onClick={() => setState({ ...state, llmProvider: p })}
+              onClick={() => selectProvider(id)}
               className={cls(
-                'flex flex-col items-start gap-1 px-4 py-3 rounded-lg border text-sm font-medium transition-all',
-                provider === p
+                'flex flex-col items-center gap-1 px-2 py-3 rounded-lg border text-center transition-all',
+                state.llmProvider === id
                   ? 'bg-blue-600/20 border-blue-500 text-blue-300'
                   : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600',
               )}
             >
-              <span className="font-semibold capitalize">{p === 'litellm' ? 'LiteLLM / Cloud' : 'Ollama (Local)'}</span>
-              <span className="text-xs text-gray-500">
-                {p === 'ollama' ? 'Run models locally via Ollama' : 'Use any cloud API via LiteLLM proxy'}
-              </span>
+              <span className="text-sm font-semibold">{label}</span>
+              <span className="text-xs text-gray-500 leading-tight">{sublabel}</span>
             </button>
           ))}
         </div>
       </div>
 
-      {provider === 'ollama' ? (
+      {/* Ollama */}
+      {state.llmProvider === 'ollama' && (
         <>
           <div>
-            <Label>Ollama Base URL</Label>
+            <Label>Ollama URL</Label>
             <Input
-              type="url" value={state.ollamaUrl} onChange={set('ollamaUrl')}
+              type="url"
+              value={state.ollamaUrl}
+              onChange={e => setState({ ...state, ollamaUrl: e.target.value })}
               placeholder="http://localhost:11434"
             />
-            <p className="mt-1 text-xs text-gray-500">The URL where your Ollama server is running.</p>
           </div>
-          <div>
-            <Label>Text Model</Label>
-            <Input
-              type="text" value={state.ollamaModel} onChange={set('ollamaModel')}
-              placeholder="gemma3:27b"
-            />
-            <p className="mt-1 text-xs text-gray-500">
-              Used for entity extraction, classification, and field extraction.
-              Run <code className="text-gray-400 bg-gray-800 px-1 rounded">ollama pull gemma3:27b</code> first.
-            </p>
-          </div>
-          <div>
-            <Label>Vision Model for OCR <span className="text-gray-600">(optional — leave empty to use Text Model)</span></Label>
-            <Input
-              type="text" value={state.ollamaVisionModel} onChange={set('ollamaVisionModel')}
-              placeholder="e.g. llava:13b or minicpm-v"
-            />
-            <p className="mt-1 text-xs text-gray-500">
-              Only needed if your text model is not vision-capable. Multimodal models like gemma3 work as-is.
-            </p>
-          </div>
+          <ModelSelect
+            label="Model"
+            value={state.ollamaModel}
+            onChange={v => setState({ ...state, ollamaModel: v })}
+            options={OLLAMA_TEXT_MODELS}
+            placeholder="Select a model…"
+          />
+          <p className="text-xs text-gray-500 -mt-3">
+            Run <code className="bg-gray-800 px-1 rounded">ollama pull {state.ollamaModel || 'gemma3:27b'}</code> first if you haven't already.
+            Multimodal models (gemma3, llava…) also handle OCR — no separate vision model needed.
+          </p>
         </>
-      ) : (
+      )}
+
+      {/* Cloud providers */}
+      {cloudDef && (
         <>
-          <div className="px-4 py-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30 text-yellow-300 text-xs">
-            <strong>Important:</strong> The LiteLLM proxy must have the provider API key configured
-            (e.g. <code className="bg-gray-900 px-1 rounded">GEMINI_API_KEY</code> env var in its config).
-            The key below is only used to authenticate <em>your app</em> to the proxy.
-          </div>
           <div>
-            <Label>LiteLLM Proxy URL</Label>
+            <Label>
+              API Key —{' '}
+              <a href={cloudDef.apiKeyUrl} target="_blank" rel="noopener noreferrer"
+                className="text-blue-400 hover:text-blue-300 underline">
+                Get one at {cloudDef.apiKeyLabel}
+              </a>
+            </Label>
             <Input
-              type="url" value={state.litellmUrl} onChange={set('litellmUrl')}
-              placeholder="http://localhost:4000"
+              type="password"
+              value={state.cloudApiKey}
+              onChange={e => setState({ ...state, cloudApiKey: e.target.value })}
+              placeholder="Paste your API key here"
             />
           </div>
-          <div>
-            <Label>Proxy API Key <span className="text-gray-600">(optional — depends on your proxy config)</span></Label>
-            <Input
-              type="password" value={state.litellmApiKey} onChange={set('litellmApiKey')}
-              placeholder="sk-… or leave empty if proxy has no auth"
-            />
+          <ModelSelect
+            label="Model"
+            value={state.cloudTextModel || cloudDef.textModels[0].id}
+            onChange={v => setState({ ...state, cloudTextModel: v })}
+            options={cloudDef.textModels}
+          />
+          <p className="text-xs text-gray-500 -mt-3">
+            This model handles OCR, entity extraction, classification and field extraction.
+            Cloud models are multimodal — no separate vision model is needed.
+          </p>
+        </>
+      )}
+
+      {/* Advanced / Other */}
+      {state.llmProvider === 'other' && (
+        <>
+          <div className="px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-xs text-gray-400">
+            Advanced: connect to a custom LiteLLM proxy. The proxy must be running and configured with your provider API keys.
           </div>
           <div>
-            <Label>Text Model Identifier</Label>
-            <Input
-              type="text" value={state.litellmModel} onChange={set('litellmModel')}
-              placeholder="gemini/gemini-2.0-flash or openai/gpt-4o"
-            />
-            <p className="mt-1 text-xs text-gray-500">
-              Format: <code className="bg-gray-800 px-1 rounded">provider/model-name</code>. See LiteLLM docs.
-            </p>
+            <Label>Proxy URL</Label>
+            <Input type="url" value={state.litellmUrl}
+              onChange={e => setState({ ...state, litellmUrl: e.target.value })}
+              placeholder="http://localhost:4000" />
           </div>
           <div>
-            <Label>Vision Model for OCR <span className="text-gray-600">(optional — leave empty to use Text Model)</span></Label>
-            <Input
-              type="text" value={state.litellmVisionModel} onChange={set('litellmVisionModel')}
-              placeholder="e.g. gemini/gemini-2.0-flash or openai/gpt-4o"
-            />
+            <Label>API Key (optional)</Label>
+            <Input type="password" value={state.litellmApiKey}
+              onChange={e => setState({ ...state, litellmApiKey: e.target.value })}
+              placeholder="sk-… or leave empty" />
+          </div>
+          <div>
+            <Label>Model</Label>
+            <Input type="text" value={state.litellmModel}
+              onChange={e => setState({ ...state, litellmModel: e.target.value })}
+              placeholder="gemini/gemini-2.0-flash or openai/gpt-4o" />
           </div>
         </>
       )}
 
-      {/* Embedding (optional, collapsed by default) */}
+      {/* Embedding — optional, collapsed */}
       <details className="group">
         <summary className="cursor-pointer text-sm text-gray-400 hover:text-gray-300 select-none list-none flex items-center gap-2 py-1">
           <span className="text-gray-600 group-open:rotate-90 transition-transform inline-block">▶</span>
-          Embedding Model <span className="text-gray-600">(optional — improves entity resolution accuracy)</span>
+          Embedding <span className="text-gray-600 text-xs">(optional — improves entity matching accuracy)</span>
         </summary>
-        <div className="mt-3 space-y-3 pl-4 border-l border-gray-700">
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => setState({ ...state, embeddingEnabled: !state.embeddingEnabled })}
-              className={cls(
-                'relative w-10 h-5 rounded-full transition-colors',
-                state.embeddingEnabled ? 'bg-blue-600' : 'bg-gray-700',
-              )}
-            >
-              <span className={cls(
-                'absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform',
-                state.embeddingEnabled ? 'translate-x-5' : 'translate-x-0.5',
-              )} />
-            </button>
-            <span className="text-sm text-gray-400">Enable embedding-based entity pre-filtering</span>
-          </div>
+        <div className="mt-3 space-y-3 pl-3 border-l border-gray-700">
+          <Toggle
+            on={state.embeddingEnabled}
+            onChange={v => setState({ ...state, embeddingEnabled: v })}
+            label="Enable embedding-based entity pre-filtering"
+          />
           {state.embeddingEnabled && (
-            <div>
-              <Label>Embedding Model</Label>
-              <Input
-                type="text" value={state.embeddingModel}
-                onChange={e => setState({ ...state, embeddingModel: e.target.value })}
-                placeholder="nomic-embed-text (Ollama) or text-embedding-3-small (OpenAI)"
-              />
-              <p className="mt-1 text-xs text-gray-500">
-                Uses the same provider as the text model. Ollama: <code className="bg-gray-800 px-1 rounded">ollama pull nomic-embed-text</code>
-              </p>
-            </div>
+            <>
+              {state.llmProvider === 'ollama' && (
+                <ModelSelect
+                  label="Embedding Model"
+                  value={state.embeddingModel || 'nomic-embed-text'}
+                  onChange={v => setState({ ...state, embeddingModel: v })}
+                  options={OLLAMA_EMBED_MODELS}
+                />
+              )}
+              {cloudDef && cloudDef.embedModels.length > 0 && (
+                <ModelSelect
+                  label="Embedding Model"
+                  value={state.embeddingModel || cloudDef.defaultEmbedding}
+                  onChange={v => setState({ ...state, embeddingModel: v })}
+                  options={cloudDef.embedModels}
+                />
+              )}
+              {cloudDef && cloudDef.embedModels.length === 0 && (
+                <p className="text-xs text-yellow-400">
+                  Anthropic does not provide embedding models. Use a different provider for embeddings, or disable.
+                </p>
+              )}
+              {state.llmProvider === 'ollama' && (
+                <p className="text-xs text-gray-500">
+                  Run <code className="bg-gray-800 px-1 rounded">ollama pull {state.embeddingModel || 'nomic-embed-text'}</code> first.
+                </p>
+              )}
+            </>
           )}
         </div>
       </details>
 
       {/* Test connection */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 pt-1">
         <button
           type="button"
           onClick={handleTest}
-          disabled={testResult === 'testing'}
+          disabled={testResult === 'testing' || saving}
           className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-300 hover:border-gray-600 disabled:opacity-50 transition-colors"
         >
           {testResult === 'testing' ? <Loader2 size={14} className="animate-spin" /> : <Wifi size={14} />}
           Test Connection
         </button>
-        {testResult === 'ok' && (
-          <span className="flex items-center gap-1 text-green-400 text-sm">
-            <CheckCircle2 size={14} /> Pipeline reachable
-          </span>
-        )}
-        {testResult === 'fail' && (
-          <span className="flex items-center gap-1 text-yellow-400 text-sm">
-            <WifiOff size={14} /> Could not reach pipeline — you can still continue
-          </span>
-        )}
+        {testResult === 'ok' && <span className="flex items-center gap-1 text-green-400 text-sm"><CheckCircle2 size={14} /> Connected</span>}
+        {testResult === 'fail' && <span className="flex items-center gap-1 text-yellow-400 text-sm"><WifiOff size={14} /> Could not connect — you can still continue</span>}
       </div>
 
       {error && <ErrorBox msg={error} />}
 
-      <div className="flex gap-3 pt-1">
-        <button
-          type="button" onClick={onBack}
-          className="px-4 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-300 hover:bg-gray-700 transition-colors"
-        >
+      <div className="flex gap-3">
+        <button type="button" onClick={onBack}
+          className="px-4 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-300 hover:bg-gray-700 transition-colors">
           Back
         </button>
-        <button
-          type="button" onClick={handleNext} disabled={saving}
-          className="flex-1 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-500 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
-        >
-          {saving ? <Loader2 size={16} className="animate-spin" /> : null}
-          {saving ? 'Saving…' : 'Save & Continue'}
+        <button type="button" onClick={handleApply} disabled={saving}
+          className="flex-1 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-500 disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
+          {saving && <Loader2 size={16} className="animate-spin" />}
+          {saving ? 'Applying…' : 'Apply & Continue'}
           {!saving && <ChevronRight size={16} />}
         </button>
       </div>
@@ -640,7 +829,7 @@ function Step3({
 // ---------------------------------------------------------------------------
 // Step 4 — Ready
 // ---------------------------------------------------------------------------
-function Step4({ onFinish }: { onFinish: () => void }) {
+function Step4() {
   const [done, setDone] = useState(false);
 
   useEffect(() => {
@@ -811,7 +1000,7 @@ export default function SetupPage() {
             />
           )}
           {step === 3 && (
-            <Step4 onFinish={() => navigate('/')} />
+            <Step4 />
           )}
         </div>
 

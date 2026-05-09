@@ -9,7 +9,7 @@ import Badge from '../../components/Badge';
 
 interface OrgSummary { id: string; name: string; created_at: string; }
 
-const ROLES = ['user', 'manager', 'admin'];
+const ROLES = ['viewer', 'user', 'org_admin', 'admin'];
 const SOURCE_TYPES = ['directory', 'email'];
 
 // ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ function MembersPanel({ orgId, allUsers }: { orgId: string; allUsers: { id: stri
                 </div>
               ) : (
                 <div className="flex items-center gap-2">
-                  <Badge color={m.role === 'admin' ? 'blue' : m.role === 'manager' ? 'yellow' : 'gray'}>{m.role}</Badge>
+                  <Badge color={m.role === 'admin' ? 'blue' : (m.role === 'org_admin' || m.role === 'manager') ? 'yellow' : m.role === 'viewer' ? 'purple' : 'gray'}>{m.role}</Badge>
                   <button
                     onClick={() => { setEditMemberId(m.user_id); setEditRole(m.role); }}
                     className="text-gray-500 hover:text-gray-300 p-1"

@@ -12,10 +12,12 @@ from sqlmodel import select, func
 from dmsai_models import Organization, User, UserOrganization, SystemConfig, get_session, init_db
 from auth import (
     hash_password, verify_password, create_access_token,
-    get_current_user, require_admin, require_manager,
+    get_current_user, require_admin, require_org_admin,
+    require_manager,  # back-compat alias for require_org_admin
     validate_password, generate_verification_token,
     is_email_verification_enabled, is_registration_open,
     check_account_lock, record_failed_login, clear_failed_logins,
+    normalize_role as _norm_role, VALID_ROLES,
     _get_auth_config,
 )
 from email_utils import send_verification_email
@@ -206,7 +208,7 @@ async def _handle_ldap_login(ldap_info):
                 email=ldap_info.email,
                 password_hash="",
                 full_name=ldap_info.full_name,
-                role=default_role if default_role in ("user", "manager", "admin") else "user",
+                role=_norm_role(default_role),
                 organization_id=org.id,
                 is_active=True,
                 auth_provider="ldap",
@@ -260,9 +262,6 @@ async def _handle_ldap_login(ldap_info):
 async def register(body: RegisterRequest, request: Request):
     init_db()
 
-    if not is_registration_open():
-        raise HTTPException(status_code=403, detail="Self-service registration is disabled. Contact an administrator.")
-
     pw_error = validate_password(body.password)
     if pw_error:
         raise HTTPException(status_code=400, detail=pw_error)
@@ -276,6 +275,18 @@ async def register(body: RegisterRequest, request: Request):
 
         total_users = session.exec(select(func.count()).select_from(User)).one()
         is_first_user = total_users == 0
+
+        # Closed-by-default: only the first user can self-register (system bootstrap).
+        # Subsequent users must come through admin creation, an invitation token,
+        # or be explicitly enabled by an admin via SystemConfig.registration_open.
+        if not is_first_user and not is_registration_open():
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Self-service registration is disabled. Ask an administrator "
+                    "to create your account or send you an invitation link."
+                ),
+            )
 
         if is_first_user:
             # Bootstrap: first user creates the initial organization and becomes its admin.
@@ -594,19 +605,23 @@ async def update_user(user_id: str, body: UserUpdate, current: User = Depends(re
         if body.full_name is not None:
             user.full_name = body.full_name
         if body.role is not None:
-            if body.role not in ("admin", "manager", "user"):
-                raise HTTPException(status_code=400, detail="role must be admin, manager, or user")
-            if user_id == current.id and body.role != "admin":
+            new_role = _norm_role(body.role)
+            if new_role not in VALID_ROLES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"role must be one of {', '.join(VALID_ROLES)}",
+                )
+            if user_id == current.id and new_role != "admin":
                 raise HTTPException(
                     status_code=400,
                     detail="You cannot demote your own admin account. Ask another admin to do this.",
                 )
             # Update the org-specific role in UserOrganization
-            membership.role = body.role
+            membership.role = new_role
             session.add(membership)
             # Also sync to User.role if this is the user's home org
             if user.organization_id == current.organization_id:
-                user.role = body.role
+                user.role = new_role
         if body.is_active is not None:
             if user_id == current.id and not body.is_active:
                 raise HTTPException(status_code=400, detail="You cannot deactivate your own account")

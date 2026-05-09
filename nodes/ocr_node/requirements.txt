@@ -1,7 +1,7 @@
 fastapi
 uvicorn
 sqlmodel
-aiosqlite
+psycopg[binary]>=3.1
 httpx
 pyyaml
 PyMuPDF

@@ -157,7 +157,7 @@ async def update_document_comment(
         comment = session.get(DocumentComment, comment_id)
         if not comment or comment.document_id != document_id:
             raise HTTPException(status_code=404, detail="Comment not found")
-        if comment.user_id != user.id and user.role not in ("admin", "manager"):
+        if comment.user_id != user.id and user.role not in ("admin", "org_admin", "manager"):
             raise HTTPException(status_code=403, detail="Only the author or an admin may edit this comment")
         comment.content = body.content.strip()
         comment.updated_at = datetime.utcnow()
@@ -179,7 +179,7 @@ async def delete_document_comment(
         comment = session.get(DocumentComment, comment_id)
         if not comment or comment.document_id != document_id:
             raise HTTPException(status_code=404, detail="Comment not found")
-        if comment.user_id != user.id and user.role not in ("admin", "manager"):
+        if comment.user_id != user.id and user.role not in ("admin", "org_admin", "manager"):
             raise HTTPException(status_code=403, detail="Only the author or an admin may delete this comment")
         session.delete(comment)
         _record_audit(session, document_id, user.id, "comment_deleted", f"Comment {comment_id[:8]}")
@@ -254,7 +254,7 @@ async def update_entity_comment(
         comment = session.get(EntityComment, comment_id)
         if not comment or comment.entity_id != entity_id:
             raise HTTPException(status_code=404, detail="Comment not found")
-        if comment.user_id != user.id and user.role not in ("admin", "manager"):
+        if comment.user_id != user.id and user.role not in ("admin", "org_admin", "manager"):
             raise HTTPException(status_code=403, detail="Only the author or an admin may edit this comment")
         comment.content = body.content.strip()
         comment.updated_at = datetime.utcnow()
@@ -275,7 +275,7 @@ async def delete_entity_comment(
         comment = session.get(EntityComment, comment_id)
         if not comment or comment.entity_id != entity_id:
             raise HTTPException(status_code=404, detail="Comment not found")
-        if comment.user_id != user.id and user.role not in ("admin", "manager"):
+        if comment.user_id != user.id and user.role not in ("admin", "org_admin", "manager"):
             raise HTTPException(status_code=403, detail="Only the author or an admin may delete this comment")
         session.delete(comment)
         session.commit()

@@ -151,6 +151,34 @@ class BucketPermission(SQLModel, table=True):
     permission: str = Field(default="view")
 
 
+class Invitation(SQLModel, table=True):
+    """One-time invitation token used to onboard a new user.
+
+    The token is shown to the inviting admin once.  When a recipient opens
+    the redeem URL, the frontend hits ``GET /api/invitations/{token}`` to
+    show org/role context, then ``POST /api/invitations/{token}/redeem``
+    with their chosen password and full name to create the account and
+    bind the prebound permissions.
+
+    ``bucket_grants`` is a JSON array of ``{bucket_id, permission}`` so
+    invitees can be granted access to buckets that aren't in the org_admin
+    bypass set (e.g. cross-org bucket access).
+    """
+
+    id: str = Field(primary_key=True)
+    token: str = Field(index=True, unique=True)
+    organization_id: str = Field(foreign_key="organization.id", index=True)
+    role: str = Field(default="user")
+    bucket_grants: str = Field(default="[]")  # JSON: [{"bucket_id":..., "permission":...}]
+    invited_email: Optional[str] = Field(default=None, index=True)
+    invited_by: Optional[str] = Field(default=None, foreign_key="user.id")
+    full_name_hint: Optional[str] = Field(default=None)
+    expires_at: datetime
+    redeemed_at: Optional[datetime] = Field(default=None)
+    redeemed_by_user_id: Optional[str] = Field(default=None, foreign_key="user.id")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 # ---------------------------------------------------------------------------
 # Entity system
 # ---------------------------------------------------------------------------

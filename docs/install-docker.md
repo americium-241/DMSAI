@@ -136,7 +136,7 @@ All runtime data is stored in Docker named volumes:
 
 | Volume | Contents |
 |---|---|
-| `dmsai_db` | SQLite database |
+| `pg-data` | PostgreSQL data directory (the `dmsai` database) |
 | `dmsai_storage` | Uploaded and converted documents |
 | `dmsai_ollama` | Downloaded Ollama models (`--profile ollama`) |
 

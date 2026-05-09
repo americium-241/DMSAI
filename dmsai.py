@@ -3,16 +3,16 @@
 DMSAI CLI - manage the full application stack.
 
 Usage:
-    python dmsai.py setup           First-time setup: create .env, generate secrets
-    python dmsai.py start           Start all services (runs setup automatically if needed)
-    python dmsai.py stop            Stop all services
-    python dmsai.py restart         Restart all services
-    python dmsai.py status          Show service status
-    python dmsai.py logs <service>  Tail the log of a service
-    python dmsai.py clean-db        Wipe all data for a fresh start
+    python dmsai.py setup              First-time setup (.env, secrets, PostgreSQL)
+    python dmsai.py start              Start all services (runs setup automatically if needed)
+    python dmsai.py stop               Stop all services
+    python dmsai.py restart            Restart all services
+    python dmsai.py status             Show service status
+    python dmsai.py logs <service>     Tail the log of a service
+    python dmsai.py clean-db           Wipe all data for a fresh start
 
 Options:
-    --skip-litellm      Don't start the LiteLLM proxy
+    --skip-litellm       Don't start the LiteLLM proxy
     --only <svc,...>     Only start/stop these services (comma-separated)
 """
 
@@ -234,8 +234,14 @@ def start_service(svc: dict) -> None:
         cmd = f"litellm --config \"{cfg}\" --port {port}"
         api_key = _read_db_config("litellm_api_key")
         if api_key:
+            # Pass the stored key as the env var for every common provider —
+            # the user only has one key, and litellm_config.yaml references
+            # the right one (os.environ/GEMINI_API_KEY etc.).
             env["GEMINI_API_KEY"] = api_key
             env["GOOGLE_API_KEY"] = api_key
+            env["OPENAI_API_KEY"] = api_key
+            env["ANTHROPIC_API_KEY"] = api_key
+            env["COHERE_API_KEY"] = api_key
     elif kind == "frontend":
         cmd = "npm run dev"
     else:
@@ -387,8 +393,15 @@ def cmd_logs(services: list[dict], target: str) -> None:
 
 
 def cmd_setup(silent: bool = False) -> bool:
-    """
-    First-time setup: create .env from .env.example and auto-generate secrets.
+    """First-time setup: create .env, generate secrets, bootstrap PostgreSQL.
+
+    PostgreSQL is the only supported production database.  This command:
+    1. Copies .env.example to .env if missing.
+    2. Generates DMSAI_JWT_SECRET / DMSAI_INTERNAL_API_KEY if still placeholders.
+    3. Creates required data directories.
+    4. Probes / installs / provisions PostgreSQL via scripts/postgres_setup.py.
+       If auto-install fails, prints platform-specific manual instructions.
+
     Returns True if any change was made, False if already set up.
     """
     changed = False
@@ -441,6 +454,55 @@ def cmd_setup(silent: bool = False) -> bool:
             print(f"  {_c('MKDIR', CYAN)}  {d}")
             changed = True
 
+    # PostgreSQL bootstrap — always attempted, idempotent.  Probes localhost,
+    # installs natively if needed (winget / brew / apt / dnf), creates the
+    # dmsai role + database, and rewrites .env to point at it.  Falls back
+    # to printing manual instructions if anything fails.
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        from postgres_setup import bootstrap, platform_install_hint  # noqa: WPS433
+    except Exception as e:  # pragma: no cover — only happens with broken installs
+        print(f"  {_c('Error:', RED)} could not import postgres_setup helper: {e}")
+        return changed
+
+    if not silent:
+        print()
+        print(f"  {_c('PostgreSQL setup', CYAN)}")
+
+    pg_url = "postgresql+psycopg://dmsai:dmsai@localhost:5432/dmsai"
+    ok = bootstrap()
+    if ok:
+        _new_lines = []
+        switched = False
+        env_text = ENV_FILE.read_text(encoding="utf-8")
+        for line in env_text.splitlines(keepends=True):
+            if line.startswith("DMSAI_DB_URL=") and "postgresql" not in line:
+                _new_lines.append("# " + line)
+                _new_lines.append(f"DMSAI_DB_URL={pg_url}\n")
+                switched = True
+            else:
+                _new_lines.append(line)
+        if "DMSAI_DB_URL=" not in env_text:
+            _new_lines.append(f"\nDMSAI_DB_URL={pg_url}\n")
+            switched = True
+        if switched:
+            ENV_FILE.write_text("".join(_new_lines), encoding="utf-8")
+            os.environ["DMSAI_DB_URL"] = pg_url
+            print(f"  {_c('CONFIG', CYAN)} DMSAI_DB_URL set to PostgreSQL")
+            changed = True
+        else:
+            _load_dotenv()
+            print(f"  {_c('OK', GREEN)}     DMSAI_DB_URL already points at PostgreSQL")
+    else:
+        print()
+        print(f"  {_c('PostgreSQL auto-install failed.', YELLOW)} Manual options:")
+        for line in platform_install_hint().splitlines():
+            print(f"  {_c(line, GRAY)}")
+        print()
+        print(f"  Or use Docker: {_c('docker compose up -d postgres', CYAN)}")
+        print(f"  Then re-run:   {_c('python dmsai.py setup', CYAN)}")
+        print()
+
     if not silent and not changed:
         print(f"  {_c('OK', GREEN)}     already set up")
 
@@ -452,8 +514,13 @@ def cmd_setup(silent: bool = False) -> bool:
 
 
 def cmd_clean_db() -> None:
+    """Drop every DMSAI table from PostgreSQL and clear local storage/models.
+
+    Internal node queues (decentraflow ``internal_queue.db`` SQLite files
+    inside each node directory) are also wiped because they cache the same
+    document IDs as the central DB.
+    """
     print(f"\n{_c('=== Clean Database ===', CYAN)}\n")
-    db_path = ROOT / "data" / "dmsai.db"
     storage_path = ROOT / "data" / "storage"
     models_path = ROOT / "data" / "models"
 
@@ -462,12 +529,25 @@ def cmd_clean_db() -> None:
         print(f"  {_c('Error:', RED)} stop all services first (python dmsai.py stop)")
         sys.exit(1)
 
-    if db_path.exists():
-        db_path.unlink()
-        print(f"  Deleted {db_path}")
-    else:
-        print(f"  {_c('--', GRAY)}  {db_path} (not found)")
+    # Drop all tables from Postgres via SQLAlchemy metadata.
+    sys.path.insert(0, str(ROOT / "shared"))
+    try:
+        from sqlmodel import SQLModel
+        from dmsai_models import models  # noqa: F401 — registers all tables on metadata
+        from dmsai_models.connection import get_engine
+        engine = get_engine()
+        url = str(engine.url)
+        SQLModel.metadata.drop_all(engine)
+        print(f"  Dropped all tables on {url.split('@')[-1] if '@' in url else url}")
+        # Reset the init guard so the next start re-creates + re-seeds the schema.
+        import dmsai_models.connection as _cm
+        _cm._INITIALIZED = False  # type: ignore[attr-defined]
+    except Exception as e:
+        print(f"  {_c('Error:', RED)} could not drop tables: {e}")
+        print(f"  Is PostgreSQL running?  Try: {_c('python dmsai.py setup', CYAN)}")
+        sys.exit(1)
 
+    # Clear filesystem caches (storage + models)
     import shutil
     for d in [storage_path, models_path]:
         if d.exists():
@@ -476,6 +556,23 @@ def cmd_clean_db() -> None:
             print(f"  Cleared  {d}")
         else:
             print(f"  {_c('--', GRAY)}  {d} (not found)")
+
+    # Wipe per-node decentraflow queues so stale task IDs don't leak in.
+    nodes_dir = ROOT / "nodes"
+    cleared_queues = 0
+    if nodes_dir.exists():
+        for node_dir in nodes_dir.iterdir():
+            queue_db = node_dir / "internal_queue.db"
+            if queue_db.exists():
+                queue_db.unlink()
+                cleared_queues += 1
+            # Also remove the WAL/SHM sidecars
+            for sfx in ("-wal", "-shm"):
+                p = node_dir / f"internal_queue.db{sfx}"
+                if p.exists():
+                    p.unlink()
+    if cleared_queues:
+        print(f"  Cleared  {cleared_queues} node task queue(s)")
 
     print(f"\n  {_c('Database wiped. Will be re-seeded on next start.', GREEN)}\n")
 
@@ -503,7 +600,10 @@ examples:
     )
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("setup", help="First-time setup: create .env, generate secrets, create data dirs")
+    p_setup = sub.add_parser(
+        "setup",
+        help="First-time setup: create .env, generate secrets, install/provision PostgreSQL, create data dirs",
+    )
 
     p_start = sub.add_parser("start", help="Start all services")
     p_start.add_argument("--skip-litellm", action="store_true", help="Don't start LiteLLM proxy")

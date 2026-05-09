@@ -165,6 +165,9 @@ class TestGetSession:
         with get_session() as session:
             org = Organization(id=str(uuid.uuid4()), name="CRUD Org")
             session.add(org)
+            # Flush the org first so the FK on document.organization_id resolves
+            # under strict FK enforcement (PRAGMA foreign_keys=ON / Postgres).
+            session.flush()
             doc = Document(
                 id=doc_id, filename="crud.pdf",
                 original_extension=".pdf", organization_id=org.id,

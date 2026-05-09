@@ -171,7 +171,7 @@ sudo systemctl enable --now dmsai
 
 | Path | Contents |
 |---|---|
-| `data/dmsai.db` | SQLite database |
+| PostgreSQL `dmsai` database | All structured DMSAI data (documents, entities, users, etc.) |
 | `data/storage/` | Uploaded and converted documents |
 | `data/inbox/` | Directory-watch input folder |
 | `data/processed/` | Files moved here after ingestion |

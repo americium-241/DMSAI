@@ -5,22 +5,73 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
 from sqlmodel import SQLModel, Session, create_engine
 
 _engine = None
+_INITIALIZED = False  # process-level guard for init_db()
 
-DEFAULT_DB_URL = "sqlite:///./data/dmsai.db"
+DEFAULT_DB_URL = "postgresql+psycopg://dmsai:dmsai@localhost:5432/dmsai"
 
 
 def get_engine():
-    global _engine
-    if _engine is None:
-        db_url = os.environ.get("DMSAI_DB_URL", DEFAULT_DB_URL)
-        connect_args = {}
-        if db_url.startswith("sqlite"):
-            connect_args["check_same_thread"] = False
-        _engine = create_engine(db_url, connect_args=connect_args)
+    """Return the lazily-created SQLAlchemy engine.
+
+    Branches on URL scheme:
+    - postgresql:// — production (and the default).  Uses a real connection
+      pool with pool_pre_ping to recover from idle disconnects.
+    - sqlite://     — kept ONLY for the test suite, which uses an isolated
+      temp-file database per session.  No production code path leads here.
+      Applies WAL + busy_timeout + foreign_keys PRAGMAs to every connection.
+    """
+    global _engine, _INITIALIZED
+    if _engine is not None:
+        return _engine
+
+    # Engine is being (re-)created — clear the init guard so a fresh DB
+    # is fully initialized (e.g. when tests reset _engine to None).
+    _INITIALIZED = False
+
+    db_url = os.environ.get("DMSAI_DB_URL", DEFAULT_DB_URL)
+
+    if db_url.startswith("sqlite"):
+        _engine = create_engine(
+            db_url,
+            connect_args={
+                "check_same_thread": False,
+                # Wait up to 30s for the writer lock instead of failing instantly.
+                # Note: this is the Python sqlite3 driver timeout; we ALSO set the
+                # PRAGMA below so the SQLite engine itself respects it.
+                "timeout": 30,
+            },
+        )
+
+        # PRAGMAs are per-connection, so use a connect-event listener to apply
+        # them to every new connection the pool opens.  Without this, only the
+        # very first connection got WAL/busy_timeout and every subsequent
+        # connection used the default (synchronous=FULL, busy_timeout=0).
+        @event.listens_for(_engine, "connect")
+        def _set_sqlite_pragmas(dbapi_conn, connection_record):  # noqa: ARG001
+            cursor = dbapi_conn.cursor()
+            try:
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA busy_timeout=30000")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.execute("PRAGMA foreign_keys=ON")
+            finally:
+                cursor.close()
+    else:
+        # PostgreSQL (or any other server-based DB).  Use a real pool with
+        # pool_pre_ping so we don't crash on stale idle connections after
+        # the server restarts.
+        _engine = create_engine(
+            db_url,
+            pool_size=10,
+            max_overflow=20,
+            pool_pre_ping=True,
+            pool_recycle=1800,  # recycle connections every 30 min
+        )
+
     return _engine
 
 
@@ -83,6 +134,18 @@ def _migrate_sqlite_schema(engine) -> None:
         engine,
         "idx_doc_org_created",
         "ON document(organization_id, created_at DESC)",
+    )
+    # Status filtering — used in every pipeline status check + search filter
+    _sqlite_create_index_if_missing(
+        engine,
+        "idx_doc_org_status",
+        "ON document(organization_id, status)",
+    )
+    # Lifecycle columns — speeds up the archived_at IS NULL / trashed_at IS NULL filter
+    _sqlite_create_index_if_missing(
+        engine,
+        "idx_doc_lifecycle",
+        "ON document(organization_id, archived_at, trashed_at)",
     )
     # Entity resolution: covers WHERE entity_type IN (...) AND organization_id = ?
     _sqlite_create_index_if_missing(
@@ -370,7 +433,7 @@ Respond with ONLY a valid JSON object:
         ("password_require_digit", "true", "auth", "Require at least one digit"),
         ("max_failed_logins", "5", "auth", "Lock account after N consecutive failed logins"),
         ("lockout_duration_minutes", "15", "auth", "Account lockout duration in minutes"),
-        ("registration_open", "true", "auth", "Allow self-service registration (false = admin-only)"),
+        ("registration_open", "false", "auth", "Allow self-service registration (false = admin-only). When false, only the very first user can self-register to bootstrap the system; everyone else must be created by an admin or via an invitation token."),
         # LDAP
         ("ldap_enabled", "false", "ldap", "Enable LDAP/AD authentication"),
         ("ldap_server_url", "ldap://localhost:389", "ldap", "LDAP server URL (ldap:// or ldaps://)"),
@@ -384,7 +447,7 @@ Respond with ONLY a valid JSON object:
         ("ldap_require_group", "", "ldap", "Only allow users who belong to this group DN (empty = no restriction)"),
         ("ldap_group_attribute", "memberOf", "ldap", "LDAP attribute checked for group membership"),
         ("ldap_default_organization", "LDAP Users", "ldap", "Organization name for auto-provisioned LDAP users"),
-        ("ldap_default_role", "user", "ldap", "Default role for auto-provisioned LDAP users (user/manager/admin)"),
+        ("ldap_default_role", "user", "ldap", "Default role for auto-provisioned LDAP users (user/org_admin/admin/viewer)"),
         # Ingestion — directory watcher
         ("ingestion_watch_enabled", "true", "ingestion", "Enable polling the watch directory for new files"),
         ("ingestion_watch_directory", "./data/inbox", "ingestion", "Directory to poll for new documents"),
@@ -619,8 +682,23 @@ def _migrate_document_org_ids(engine) -> None:
             )
 
 
-def init_db():
-    """Create all DMSAI tables if they don't exist."""
+def init_db(force: bool = False):
+    """Create all DMSAI tables if they don't exist.
+
+    This function runs schema migrations + 7 seeders.  It is safe to call
+    multiple times but historically it was being invoked from inside
+    every request handler / pipeline task, causing serious write-lock
+    contention on SQLite.
+
+    A process-level ``_INITIALIZED`` flag now makes subsequent calls a
+    no-op so init runs exactly once per process (at startup).  Pass
+    ``force=True`` only from tests or migration scripts that explicitly
+    want to re-seed.
+    """
+    global _INITIALIZED
+    if _INITIALIZED and not force:
+        return
+
     from . import models  # noqa: F401 — registers tables with SQLModel metadata
 
     engine = get_engine()
@@ -658,6 +736,32 @@ def init_db():
         _migrate_document_org_ids(engine)
     except Exception as e:
         logging.getLogger("dmsai_models").warning("migrate document org ids failed: %s", e)
+    try:
+        _migrate_role_renames(engine)
+    except Exception as e:
+        logging.getLogger("dmsai_models").warning("migrate role renames failed: %s", e)
+
+    _INITIALIZED = True
+
+
+def _migrate_role_renames(engine) -> None:
+    """Phase 4: rename ``manager`` role to ``org_admin`` in user + userorganization.
+
+    Idempotent: matches only rows still using the legacy name.  Runs once
+    per process via the ``_INITIALIZED`` guard above.
+    """
+    with engine.connect() as conn:
+        for stmt in (
+            text("UPDATE \"user\" SET role='org_admin' WHERE role='manager'"),
+            text("UPDATE userorganization SET role='org_admin' WHERE role='manager'"),
+        ):
+            try:
+                conn.execute(stmt)
+            except Exception:
+                # Tables may not exist yet on a brand-new DB before create_all
+                # has run for this session — safe to skip.
+                pass
+        conn.commit()
 
 
 def get_session() -> Session:

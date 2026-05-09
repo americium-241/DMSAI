@@ -31,7 +31,7 @@ export default function Layout() {
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
-  const isAdmin = user?.role === 'admin' || user?.role === 'manager';
+  const isAdmin = user?.role === 'admin' || user?.role === 'org_admin' || user?.role === 'manager';
   const orgs = user?.organizations ?? [];
   const hasMultipleOrgs = orgs.length > 1;
 

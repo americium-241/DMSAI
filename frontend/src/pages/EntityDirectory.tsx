@@ -213,7 +213,7 @@ function EntityRow({
 
 export default function EntityDirectoryPage() {
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin' || user?.role === 'manager';
+  const isAdmin = user?.role === 'admin' || user?.role === 'org_admin' || user?.role === 'manager';
 
   const [entities, setEntities]     = useState<EntityItem[]>([]);
   const [total, setTotal]           = useState(0);

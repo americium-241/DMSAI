@@ -8,6 +8,7 @@ from .models import (
     BucketRule,
     BucketDocument,
     BucketPermission,
+    Invitation,
     Entity,
     EntityField,
     DocumentEntity,
@@ -29,6 +30,7 @@ from .models import (
     EntityEmbedding,
 )
 from .connection import get_engine, get_session, init_db
+from .dialect_utils import date_str, year_week_str
 from .pipeline_events import record_pipeline_event
 from .confidence import (
     compute_item_confidence,
@@ -56,6 +58,7 @@ __all__ = [
     "BucketRule",
     "BucketDocument",
     "BucketPermission",
+    "Invitation",
     "Entity",
     "EntityField",
     "DocumentEntity",
@@ -78,6 +81,8 @@ __all__ = [
     "get_engine",
     "get_session",
     "init_db",
+    "date_str",
+    "year_week_str",
     "record_pipeline_event",
     "compute_item_confidence",
     "compute_pipeline_confidence",

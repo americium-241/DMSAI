@@ -13,9 +13,9 @@ from sqlmodel import select, func
 from dmsai_models import (
     Bucket, BucketRule, BucketDocument, BucketPermission,
     Document, DocumentField, DocumentEntity, Entity, EntityField,
-    SystemConfig, User, UserOrganization, get_session, init_db,
+    Organization, SystemConfig, User, UserOrganization, get_session, init_db,
 )
-from auth import get_current_user, require_manager
+from auth import get_current_user, require_manager, require_org_admin  # noqa: F401
 
 INTERNAL_API_KEY = os.environ.get("DMSAI_INTERNAL_API_KEY", "")
 VISION_RULE_PROMPT = """You are evaluating whether a document should be assigned to a bucket.
@@ -71,7 +71,9 @@ def _user_can_access_bucket(session, bucket_id: str, user: User, min_perm: str =
     bucket = session.get(Bucket, bucket_id)
     if not bucket or bucket.organization_id != user.organization_id:
         raise HTTPException(status_code=404, detail="Bucket not found")
-    if user.role == "admin":
+    # System admin and org-scoped admin bypass per-bucket ACLs.  ``manager``
+    # is accepted for back-compat with stale JWTs issued before the rename.
+    if user.role in ("admin", "org_admin", "manager"):
         return bucket
     perm = session.exec(
         select(BucketPermission).where(
@@ -106,19 +108,77 @@ def _bucket_document_ids_for_org(session, bucket_id: str, org_id: str) -> list[s
 # ---------------------------------------------------------------------------
 
 @router.get("")
-async def list_buckets(user: User = Depends(get_current_user)):
+async def list_buckets(
+    across_orgs: bool = False,
+    user: User = Depends(get_current_user),
+):
+    """List buckets visible to the current user.
+
+    Default scope is the user's *active* organization.  When
+    ``?across_orgs=true`` is passed, the response also includes buckets in:
+      - every organization the user is a member of (via ``UserOrganization``)
+      - every bucket the user has an explicit ``BucketPermission`` on
+        (covers cross-org grants from the Phase 5 matrix)
+
+    The response shape gains an ``organization_id`` / ``organization_name``
+    column so the UI can show which org each bucket lives in.
+    """
     init_db()
     with get_session() as session:
-        query = select(Bucket).where(Bucket.organization_id == user.organization_id)
-        buckets = session.exec(query).all()
+        if across_orgs:
+            org_ids = {
+                row.organization_id
+                for row in session.exec(
+                    select(UserOrganization).where(UserOrganization.user_id == user.id)
+                ).all()
+            }
+            org_ids.add(user.organization_id)  # active org always included
+
+            # Add orgs reached via explicit cross-org bucket grants
+            granted_bucket_ids = [
+                p.bucket_id for p in session.exec(
+                    select(BucketPermission).where(BucketPermission.user_id == user.id)
+                ).all()
+            ]
+            if granted_bucket_ids:
+                for b in session.exec(
+                    select(Bucket).where(Bucket.id.in_(granted_bucket_ids))
+                ).all():
+                    org_ids.add(b.organization_id)
+
+            buckets = session.exec(
+                select(Bucket).where(Bucket.organization_id.in_(list(org_ids) or ["__none__"]))
+            ).all()
+
+            org_names = {
+                o.id: o.name
+                for o in session.exec(
+                    select(Organization).where(
+                        Organization.id.in_(list(org_ids) or ["__none__"])
+                    )
+                ).all()
+            }
+        else:
+            buckets = session.exec(
+                select(Bucket).where(Bucket.organization_id == user.organization_id)
+            ).all()
+            org = session.get(Organization, user.organization_id)
+            org_names = {user.organization_id: org.name if org else ""}
+
         result = []
         for b in buckets:
+            # Workflow-state counts respect the bucket's own org scope.
+            visible_doc_ids = set(
+                _bucket_document_ids_for_org(session, b.id, b.organization_id)
+            )
             states = {}
-            visible_doc_ids = set(_bucket_document_ids_for_org(session, b.id, user.organization_id))
             for st in ("open", "pending", "locked", "closed"):
                 cnt = 0
                 for bd in session.exec(
-                    select(BucketDocument).where(BucketDocument.bucket_id == b.id, BucketDocument.workflow_state == st)
+                    select(BucketDocument).where(
+                        BucketDocument.bucket_id == b.id,
+                        BucketDocument.workflow_state == st,
+                    )
                 ).all():
                     if bd.document_id in visible_doc_ids:
                         cnt += 1
@@ -127,6 +187,8 @@ async def list_buckets(user: User = Depends(get_current_user)):
                 "id": b.id, "name": b.name, "description": b.description,
                 "created_at": str(b.created_at), "states": states,
                 "total": sum(states.values()),
+                "organization_id": b.organization_id,
+                "organization_name": org_names.get(b.organization_id, ""),
             })
     return result
 

@@ -15,14 +15,20 @@ from sqlalchemy import func
 from sqlmodel import select
 
 from dmsai_models import (
+    Bucket, BucketPermission,
     Correction,
     Document, DocumentEntity,
     Entity, EntityField,
     CanonicalDocumentClass, CanonicalField,
     LLMUsage,
-    Organization, OrgIngestionConfig, SystemConfig, User, UserOrganization, get_session, init_db,
+    Organization, OrgIngestionConfig, SystemConfig, User, UserOrganization,
+    get_session, init_db, date_str, year_week_str,
 )
-from auth import require_admin, require_manager, get_current_user, hash_password, validate_password
+from auth import (
+    require_admin, require_org_admin, require_manager,
+    get_current_user, hash_password, validate_password,
+    normalize_role as _norm_role, VALID_ROLES,
+)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -182,15 +188,13 @@ async def quality_metrics(user: User = Depends(require_manager)):
         ).one()
         avg_pipeline_confidence = float(avg_conf) if avg_conf is not None else None
 
+        week_expr = year_week_str(func.coalesce(Document.processed_at, Document.created_at))
         week_rows = session.exec(
-            select(
-                func.strftime("%Y-%W", func.coalesce(Document.processed_at, Document.created_at)),
-                func.avg(Document.pipeline_confidence),
-            )
+            select(week_expr, func.avg(Document.pipeline_confidence))
             .where(Document.organization_id == org_id)
             .where(Document.pipeline_confidence.isnot(None))
-            .group_by(func.strftime("%Y-%W", func.coalesce(Document.processed_at, Document.created_at)))
-            .order_by(func.strftime("%Y-%W", func.coalesce(Document.processed_at, Document.created_at)))
+            .group_by(week_expr)
+            .order_by(week_expr)
         ).all()
         weekly_confidence = [
             {"week": w[0], "avg_pipeline_confidence": float(w[1]) if w[1] is not None else None}
@@ -300,14 +304,12 @@ async def global_ingestion(
     with get_session() as session:
         # Daily counts for the past `days`
         cutoff = datetime.utcnow() - timedelta(days=days)
+        day_expr = date_str(Document.created_at)
         daily_rows = session.exec(
-            select(
-                func.strftime("%Y-%m-%d", Document.created_at),
-                func.count(),
-            )
+            select(day_expr, func.count())
             .where(Document.created_at >= cutoff)
-            .group_by(func.strftime("%Y-%m-%d", Document.created_at))
-            .order_by(func.strftime("%Y-%m-%d", Document.created_at))
+            .group_by(day_expr)
+            .order_by(day_expr)
         ).all()
         daily_counts = [{"date": r[0], "count": r[1]} for r in daily_rows]
 
@@ -433,16 +435,17 @@ async def llm_usage_stats(
         by_call_type = [{"call_type": r[0], "total_tokens": int(r[1] or 0), "calls": int(r[2] or 0)} for r in type_rows]
 
         # Daily token trend for the period
+        day_expr = date_str(LLMUsage.created_at)
         daily_rows = session.exec(
             select(
-                func.strftime("%Y-%m-%d", LLMUsage.created_at),
+                day_expr,
                 func.sum(LLMUsage.prompt_tokens),
                 func.sum(LLMUsage.completion_tokens),
                 func.count(),
             )
             .where(LLMUsage.created_at >= cutoff)
-            .group_by(func.strftime("%Y-%m-%d", LLMUsage.created_at))
-            .order_by(func.strftime("%Y-%m-%d", LLMUsage.created_at))
+            .group_by(day_expr)
+            .order_by(day_expr)
         ).all()
         daily_tokens = [
             {
@@ -982,8 +985,12 @@ async def admin_create_user(body: AdminUserCreate, admin: User = Depends(require
     if pw_error:
         raise HTTPException(status_code=400, detail=pw_error)
 
-    if body.role not in ("admin", "manager", "user"):
-        raise HTTPException(status_code=400, detail="role must be admin, manager, or user")
+    body.role = _norm_role(body.role)
+    if body.role not in VALID_ROLES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"role must be one of {', '.join(VALID_ROLES)}",
+        )
 
     target_org_id = body.organization_id or admin.organization_id
 
@@ -1087,8 +1094,12 @@ async def admin_update_user(user_id: str, body: AdminUserUpdate, admin: User = D
         if body.full_name is not None:
             user.full_name = body.full_name
         if body.role is not None:
-            if body.role not in ("admin", "manager", "user"):
-                raise HTTPException(status_code=400, detail="role must be admin, manager, or user")
+            body.role = _norm_role(body.role)
+            if body.role not in VALID_ROLES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"role must be one of {', '.join(VALID_ROLES)}",
+                )
             if user_id == admin.id and body.role != "admin":
                 raise HTTPException(
                     status_code=400,
@@ -1106,6 +1117,331 @@ async def admin_update_user(user_id: str, body: AdminUserUpdate, admin: User = D
         session.add(user)
         session.commit()
     return {"status": "updated"}
+
+
+class AdminResetPassword(BaseModel):
+    new_password: str
+
+
+@router.post(
+    "/users/{user_id}/reset-password",
+    summary="Reset a user's password",
+    description=(
+        "Force-reset a user's password.  The new password is hashed and stored. "
+        "The user keeps any other auth state (verified email, role, memberships). "
+        "Admins may only reset passwords for users in their own organization. "
+        "The target account is also automatically unlocked (failed-login counter cleared)."
+    ),
+)
+async def admin_reset_password(
+    user_id: str, body: AdminResetPassword, admin: User = Depends(require_admin)
+):
+    pw_error = validate_password(body.new_password)
+    if pw_error:
+        raise HTTPException(status_code=400, detail=pw_error)
+    with get_session() as session:
+        user = session.get(User, user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        # Same scoping rule as admin_update_user — must share an org with the admin.
+        membership = session.exec(
+            select(UserOrganization).where(
+                UserOrganization.user_id == user_id,
+                UserOrganization.organization_id == admin.organization_id,
+            )
+        ).first()
+        if not membership:
+            raise HTTPException(status_code=404, detail="User not found")
+        user.password_hash = hash_password(body.new_password)
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        # Force re-auth for any active sessions: invalidate the token versioning
+        # if/when we add it.  For now bumping the password is the source of truth.
+        session.add(user)
+        session.commit()
+    return {"status": "password_reset", "user_id": user_id}
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — Per-user permissions matrix (org × bucket)
+# ---------------------------------------------------------------------------
+
+class MatrixBucketEntry(BaseModel):
+    bucket_id: str
+    bucket_name: str
+    permission: Optional[str] = None  # None = no explicit grant
+
+
+class MatrixOrgEntry(BaseModel):
+    organization_id: str
+    organization_name: str
+    membership_role: Optional[str] = None  # None = not a member
+    buckets: list[MatrixBucketEntry] = []
+
+
+class MatrixSnapshot(BaseModel):
+    user_id: str
+    email: str
+    full_name: str
+    home_organization_id: str
+    matrix: list[MatrixOrgEntry]
+
+
+def _orgs_visible_to_admin(session, admin: User) -> list[Organization]:
+    """System admin sees every org; org_admin sees only their home org."""
+    if admin.role == "admin":
+        return list(session.exec(select(Organization).order_by(Organization.name)).all())
+    return [session.get(Organization, admin.organization_id)]
+
+
+@router.get(
+    "/users/{user_id}/access-matrix",
+    summary="Get a user's full org × bucket access matrix",
+    description=(
+        "Return every organization the calling admin can manage and, for each, "
+        "the user's membership role (or null) plus every bucket and the user's "
+        "permission on it (or null).  System admin sees every org; org_admin "
+        "sees only their own organization."
+    ),
+    response_model=MatrixSnapshot,
+)
+async def get_user_access_matrix(user_id: str, admin: User = Depends(require_org_admin)):
+    init_db()
+    with get_session() as session:
+        target = session.get(User, user_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Org-admins can only manage users that share at least one org with them.
+        if admin.role != "admin":
+            shared = session.exec(
+                select(UserOrganization).where(
+                    UserOrganization.user_id == user_id,
+                    UserOrganization.organization_id == admin.organization_id,
+                )
+            ).first()
+            if not shared:
+                raise HTTPException(status_code=404, detail="User not found")
+
+        orgs = _orgs_visible_to_admin(session, admin)
+        memberships = {
+            m.organization_id: m
+            for m in session.exec(
+                select(UserOrganization).where(UserOrganization.user_id == user_id)
+            ).all()
+        }
+
+        # Pre-fetch all buckets and permissions in the visible orgs
+        org_ids = [o.id for o in orgs if o]
+        if not org_ids:
+            return MatrixSnapshot(
+                user_id=target.id,
+                email=target.email,
+                full_name=target.full_name,
+                home_organization_id=target.organization_id,
+                matrix=[],
+            )
+        buckets = session.exec(
+            select(Bucket).where(Bucket.organization_id.in_(org_ids)).order_by(Bucket.name)
+        ).all()
+        bucket_by_org: dict[str, list[Bucket]] = defaultdict(list)
+        for b in buckets:
+            bucket_by_org[b.organization_id].append(b)
+
+        # Map bucket_id -> permission for this user (only buckets in our visible scope)
+        bucket_ids = [b.id for b in buckets]
+        perms_by_bucket: dict[str, str] = {}
+        if bucket_ids:
+            for p in session.exec(
+                select(BucketPermission).where(
+                    BucketPermission.user_id == user_id,
+                    BucketPermission.bucket_id.in_(bucket_ids),
+                )
+            ).all():
+                perms_by_bucket[p.bucket_id] = p.permission
+
+        matrix: list[MatrixOrgEntry] = []
+        for org in orgs:
+            if not org:
+                continue
+            entry = MatrixOrgEntry(
+                organization_id=org.id,
+                organization_name=org.name,
+                membership_role=memberships[org.id].role if org.id in memberships else None,
+                buckets=[
+                    MatrixBucketEntry(
+                        bucket_id=b.id,
+                        bucket_name=b.name,
+                        permission=perms_by_bucket.get(b.id),
+                    )
+                    for b in bucket_by_org.get(org.id, [])
+                ],
+            )
+            matrix.append(entry)
+
+        return MatrixSnapshot(
+            user_id=target.id,
+            email=target.email,
+            full_name=target.full_name,
+            home_organization_id=target.organization_id,
+            matrix=matrix,
+        )
+
+
+class MatrixUpdateMembership(BaseModel):
+    organization_id: str
+    role: Optional[str] = None  # None / "" = remove membership
+
+
+class MatrixUpdateBucketGrant(BaseModel):
+    bucket_id: str
+    permission: Optional[str] = None  # None / "" = remove grant
+
+
+class MatrixUpdate(BaseModel):
+    memberships: list[MatrixUpdateMembership] = []
+    bucket_grants: list[MatrixUpdateBucketGrant] = []
+
+
+@router.post(
+    "/users/{user_id}/access-matrix",
+    summary="Bulk-update a user's org × bucket permissions",
+    description=(
+        "Apply a batch of membership and bucket-permission changes to one user "
+        "in a single transaction.  When granting bucket access in an org the user "
+        "is not yet a member of, a `viewer` UserOrganization row is auto-created. "
+        "System admin can edit any org; org_admin can only edit their own org."
+    ),
+)
+async def update_user_access_matrix(
+    user_id: str, body: MatrixUpdate, admin: User = Depends(require_org_admin)
+):
+    init_db()
+    with get_session() as session:
+        target = session.get(User, user_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        visible_org_ids = {o.id for o in _orgs_visible_to_admin(session, admin) if o}
+
+        # Refuse self-demote/self-deactivate footguns
+        for m in body.memberships:
+            if m.organization_id not in visible_org_ids:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"You cannot edit memberships for org {m.organization_id}",
+                )
+            if user_id == admin.id and m.role != "admin" and m.organization_id == admin.organization_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="You cannot demote yourself in your own organization.",
+                )
+            if m.role and _norm_role(m.role) not in VALID_ROLES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"role must be one of {', '.join(VALID_ROLES)}",
+                )
+
+        # Validate bucket grants — each bucket must belong to a visible org
+        for g in body.bucket_grants:
+            bucket = session.get(Bucket, g.bucket_id)
+            if not bucket:
+                raise HTTPException(status_code=404, detail=f"Bucket {g.bucket_id} not found")
+            if bucket.organization_id not in visible_org_ids:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"You cannot edit bucket {g.bucket_id} (other organization)",
+                )
+            if g.permission and g.permission not in ("view", "edit", "admin"):
+                raise HTTPException(status_code=400, detail="permission must be view/edit/admin")
+
+        # ---- Apply membership changes ----
+        existing_mems = {
+            m.organization_id: m
+            for m in session.exec(
+                select(UserOrganization).where(UserOrganization.user_id == user_id)
+            ).all()
+        }
+        for m in body.memberships:
+            normalized = _norm_role(m.role) if m.role else None
+            current = existing_mems.get(m.organization_id)
+            if not normalized:
+                # Remove membership (also clear all bucket perms in that org)
+                if current:
+                    bucket_ids = [
+                        b.id for b in session.exec(
+                            select(Bucket).where(Bucket.organization_id == m.organization_id)
+                        ).all()
+                    ]
+                    if bucket_ids:
+                        for bp in session.exec(
+                            select(BucketPermission).where(
+                                BucketPermission.user_id == user_id,
+                                BucketPermission.bucket_id.in_(bucket_ids),
+                            )
+                        ).all():
+                            session.delete(bp)
+                    session.delete(current)
+            else:
+                if current:
+                    current.role = normalized
+                    session.add(current)
+                else:
+                    session.add(UserOrganization(
+                        id=str(uuid.uuid4()),
+                        user_id=user_id,
+                        organization_id=m.organization_id,
+                        role=normalized,
+                        is_default=False,
+                        joined_at=datetime.utcnow(),
+                    ))
+
+        # ---- Apply bucket grant changes ----
+        existing_perms = {
+            p.bucket_id: p
+            for p in session.exec(
+                select(BucketPermission).where(BucketPermission.user_id == user_id)
+            ).all()
+        }
+        for g in body.bucket_grants:
+            current = existing_perms.get(g.bucket_id)
+            if not g.permission:
+                if current:
+                    session.delete(current)
+            else:
+                if current:
+                    current.permission = g.permission
+                    session.add(current)
+                else:
+                    session.add(BucketPermission(
+                        id=str(uuid.uuid4()),
+                        bucket_id=g.bucket_id,
+                        user_id=user_id,
+                        permission=g.permission,
+                    ))
+
+                # Auto-add a viewer membership if the user has no org row yet.
+                bucket = session.get(Bucket, g.bucket_id)
+                if bucket:
+                    has_membership = session.exec(
+                        select(UserOrganization).where(
+                            UserOrganization.user_id == user_id,
+                            UserOrganization.organization_id == bucket.organization_id,
+                        )
+                    ).first()
+                    if not has_membership:
+                        session.add(UserOrganization(
+                            id=str(uuid.uuid4()),
+                            user_id=user_id,
+                            organization_id=bucket.organization_id,
+                            role="viewer",
+                            is_default=False,
+                            joined_at=datetime.utcnow(),
+                        ))
+
+        session.commit()
+
+    return {"status": "updated", "user_id": user_id}
 
 
 # ---------------------------------------------------------------------------
@@ -1202,8 +1538,12 @@ async def admin_list_org_members(org_id: str, admin: User = Depends(require_admi
 
 @router.post("/organizations/{org_id}/members", summary="Add a user to an organization")
 async def admin_add_org_member(org_id: str, body: MemberAdd, admin: User = Depends(require_admin)):
-    if body.role not in ("admin", "manager", "user"):
-        raise HTTPException(status_code=400, detail="role must be admin, manager, or user")
+    body.role = _norm_role(body.role)
+    if body.role not in VALID_ROLES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"role must be one of {', '.join(VALID_ROLES)}",
+        )
     with get_session() as session:
         org = session.get(Organization, org_id)
         if not org:
@@ -1242,8 +1582,12 @@ async def admin_add_org_member(org_id: str, body: MemberAdd, admin: User = Depen
 async def admin_update_org_member(
     org_id: str, user_id: str, body: MemberUpdate, admin: User = Depends(require_admin)
 ):
-    if body.role not in ("admin", "manager", "user"):
-        raise HTTPException(status_code=400, detail="role must be admin, manager, or user")
+    body.role = _norm_role(body.role)
+    if body.role not in VALID_ROLES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"role must be one of {', '.join(VALID_ROLES)}",
+        )
     with get_session() as session:
         membership = session.exec(
             select(UserOrganization).where(

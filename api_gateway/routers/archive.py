@@ -16,6 +16,7 @@ from sqlmodel import select
 from dmsai_models import (
     Document, DocumentField, DocumentEntity, Entity,
     DocumentAuditLog, DocumentVersion, DocumentComment, EntityComment,
+    DocumentClassLabel, PipelineEvent, DocumentEmbedding,
     Correction, BucketDocument, User, SystemConfig, Organization,
     get_session, init_db,
 )
@@ -174,7 +175,7 @@ async def restore_document(document_id: str, user: User = Depends(get_current_us
 @router.delete("/documents/{document_id}/permanent")
 async def permanent_delete_document(document_id: str, user: User = Depends(get_current_user)):
     init_db()
-    if user.role not in ("admin", "manager"):
+    if user.role not in ("admin", "org_admin", "manager"):
         raise HTTPException(status_code=403, detail="Only admins may permanently delete documents")
     with get_session() as session:
         doc = session.get(Document, document_id)
@@ -195,7 +196,10 @@ async def permanent_delete_document(document_id: str, user: User = Depends(get_c
             if os.path.isfile(storage_path):
                 os.remove(storage_path)
 
-        # Cascade-delete related records
+        # Cascade-delete every table that has a FK on document.id.  With
+        # PRAGMA foreign_keys=ON (SQLite) and Postgres' default behaviour,
+        # any orphan would block the final DELETE; missing one of these is
+        # silent on legacy SQLite but a hard failure now.
         for field in session.exec(select(DocumentField).where(DocumentField.document_id == document_id)).all():
             session.delete(field)
         for link in session.exec(select(DocumentEntity).where(DocumentEntity.document_id == document_id)).all():
@@ -210,7 +214,14 @@ async def permanent_delete_document(document_id: str, user: User = Depends(get_c
             session.delete(al)
         for dv in session.exec(select(DocumentVersion).where(DocumentVersion.document_id == document_id)).all():
             session.delete(dv)
+        for dcl in session.exec(select(DocumentClassLabel).where(DocumentClassLabel.document_id == document_id)).all():
+            session.delete(dcl)
+        for pe in session.exec(select(PipelineEvent).where(PipelineEvent.document_id == document_id)).all():
+            session.delete(pe)
+        for de in session.exec(select(DocumentEmbedding).where(DocumentEmbedding.document_id == document_id)).all():
+            session.delete(de)
 
+        session.flush()  # surface any remaining FK violations before final delete
         session.delete(doc)
         session.commit()
     return {"status": "permanently_deleted"}
@@ -314,7 +325,7 @@ async def list_archived_documents(
     user: User = Depends(get_current_user),
 ):
     init_db()
-    if user.role not in ("admin", "manager"):
+    if user.role not in ("admin", "org_admin", "manager"):
         raise HTTPException(status_code=403, detail="Admin only")
     with get_session() as session:
         base_q = (
@@ -351,7 +362,7 @@ async def list_archived_documents(
 async def compact_storage(user: User = Depends(get_current_user)):
     """Compress archived PDFs whose retention period has elapsed."""
     init_db()
-    if user.role not in ("admin", "manager"):
+    if user.role not in ("admin", "org_admin", "manager"):
         raise HTTPException(status_code=403, detail="Admin only")
     compressed = []
     already_done = []
@@ -414,7 +425,7 @@ async def compact_storage(user: User = Depends(get_current_user)):
 async def purge_old_trash(user: User = Depends(get_current_user)):
     """List documents in trash older than retention_days for admin review."""
     init_db()
-    if user.role not in ("admin", "manager"):
+    if user.role not in ("admin", "org_admin", "manager"):
         raise HTTPException(status_code=403, detail="Admin only")
     with get_session() as session:
         org = session.get(Organization, user.organization_id)
@@ -457,7 +468,7 @@ async def get_retention_settings(user: User = Depends(get_current_user)):
     overrides.  The ``effective_*`` fields show what the system will actually
     use.
     """
-    if user.role not in ("admin", "manager"):
+    if user.role not in ("admin", "org_admin", "manager"):
         raise HTTPException(status_code=403, detail="Admin only")
     init_db()
     with get_session() as session:
@@ -483,7 +494,7 @@ async def update_retention_settings(body: RetentionUpdate, user: User = Depends(
     Pass ``null`` / omit a field to revert to the global default.
     Values must be positive integers or 0 (0 = disabled).
     """
-    if user.role not in ("admin", "manager"):
+    if user.role not in ("admin", "org_admin", "manager"):
         raise HTTPException(status_code=403, detail="Admin only")
     if body.archive_retention_days is not None and body.archive_retention_days < 0:
         raise HTTPException(status_code=400, detail="archive_retention_days must be >= 0")

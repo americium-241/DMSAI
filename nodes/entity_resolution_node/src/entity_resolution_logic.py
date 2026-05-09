@@ -192,6 +192,8 @@ async def _llm_compare(
     )
     try:
         raw = await _call_llm(prompt, json_format=True, document_id=document_id)
+        if not raw:
+            return None
         text = raw.strip()
         # Strip markdown fences if the model adds them
         if text.startswith("```"):

@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, X, ChevronLeft, ChevronRight, SlidersHorizontal, FileText, Hash, Users, AlignLeft } from 'lucide-react';
+import { Search, X, ChevronLeft, ChevronRight, SlidersHorizontal, FileText, Hash, Users, AlignLeft, Globe, Building2 } from 'lucide-react';
 import { api, type DocumentSummary, type SearchResult, type SearchScope } from '../api';
 import Badge from '../components/Badge';
+import { useAuth } from '../auth';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -58,6 +59,9 @@ function MatchChip({ type }: { type: string }) {
 const PAGE_SIZE = 20;
 
 export default function DocumentsPage() {
+  const { user } = useAuth();
+  const hasMultipleOrgs = (user?.organizations?.length || 0) > 1;
+
   // — search state -----------------------------------------------------------
   const [query, setQuery]     = useState('');
   const [activeQ, setActiveQ] = useState('');         // committed query
@@ -68,6 +72,7 @@ export default function DocumentsPage() {
   const [classFilter, setClassFilter]         = useState('');
   const [lifecycleFilter, setLifecycleFilter] = useState<LifecycleFilter>('');
   const [showFacets, setShowFacets]           = useState(false);
+  const [acrossOrgs, setAcrossOrgs]           = useState(false);
 
   // — results ----------------------------------------------------------------
   const [results, setResults]       = useState<SearchResult[]>([]);
@@ -87,6 +92,7 @@ export default function DocumentsPage() {
       if (classFilter)    params.classification  = classFilter;
       if (lifecycleFilter === 'archived') params.archived = 'true';
       if (lifecycleFilter === 'trashed')  params.trashed  = 'true';
+      if (acrossOrgs)     params.across_orgs    = 'true';
       const res = await api.getDocuments(params);
       setBrowseDocs(prev => append ? [...prev, ...res.documents] : res.documents);
       setResults([]);
@@ -94,7 +100,7 @@ export default function DocumentsPage() {
     } finally {
       if (append) setLoadingMore(false); else setLoading(false);
     }
-  }, [statusFilter, classFilter, lifecycleFilter]);
+  }, [statusFilter, classFilter, lifecycleFilter, acrossOrgs]);
 
   // — search mode ------------------------------------------------------------
   const runSearch = useCallback(async (q: string, p = 1) => {
@@ -124,7 +130,7 @@ export default function DocumentsPage() {
     if (activeQ) runSearch(activeQ, 1);
     else         loadBrowse(1);
     setPage(1);
-  }, [statusFilter, classFilter, lifecycleFilter]);
+  }, [statusFilter, classFilter, lifecycleFilter, acrossOrgs]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -180,9 +186,29 @@ export default function DocumentsPage() {
         <div>
           <h1 className="text-2xl font-bold text-white">Search</h1>
           <p className="text-sm text-gray-500 mt-0.5">
-            {loading ? 'Searching…' : `${total.toLocaleString()} document${total !== 1 ? 's' : ''}${isSearchMode ? ` for "${activeQ}"` : ''}`}
+            {loading ? 'Searching…' : `${total.toLocaleString()} document${total !== 1 ? 's' : ''}${isSearchMode ? ` for "${activeQ}"` : ''}${acrossOrgs ? ' — across all your organizations' : ''}`}
           </p>
         </div>
+        {hasMultipleOrgs && (
+          <div className="flex bg-gray-900 border border-gray-800 rounded-lg p-0.5">
+            <button
+              onClick={() => setAcrossOrgs(false)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                !acrossOrgs ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'
+              }`}
+            >
+              <Building2 size={12} /> Current org
+            </button>
+            <button
+              onClick={() => setAcrossOrgs(true)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                acrossOrgs ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'
+              }`}
+            >
+              <Globe size={12} /> All my orgs
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Search bar */}
@@ -304,6 +330,7 @@ export default function DocumentsPage() {
             <tr className="border-b border-gray-800 text-gray-500 text-xs uppercase tracking-wider">
               <th className="text-left px-4 py-3">Document</th>
               {isSearchMode && <th className="text-left px-4 py-3">Match</th>}
+              {acrossOrgs && !isSearchMode && <th className="text-left px-4 py-3">Organization</th>}
               <th className="text-left px-4 py-3">Classification</th>
               <th className="text-left px-4 py-3">Status</th>
               <th className="text-left px-4 py-3">Confidence</th>
@@ -364,6 +391,11 @@ export default function DocumentsPage() {
                       {d.filename}
                     </Link>
                   </td>
+                  {acrossOrgs && (
+                    <td className="px-4 py-3 text-gray-400 text-xs">
+                      {(d as any).organization_name || <span className="text-gray-600">—</span>}
+                    </td>
+                  )}
                   <td className="px-4 py-3 text-gray-400 text-xs">
                     {[d.classification_label, d.classification_subcategory_label].filter(Boolean).join(' / ') || '—'}
                   </td>

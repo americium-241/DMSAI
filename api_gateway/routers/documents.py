@@ -15,7 +15,8 @@ from sqlmodel import select, func, or_
 
 from dmsai_models import (
     Document, DocumentField, DocumentEntity, Entity, EntityField,
-    Bucket, BucketDocument, User, Correction, PipelineEvent,
+    Bucket, BucketDocument, Organization, User, UserOrganization,
+    Correction, PipelineEvent,
     DocumentAuditLog, DocumentVersion,
     get_session, init_db,
 )
@@ -124,6 +125,7 @@ def _doc_to_response(doc: Document) -> dict:
         "archived_at": str(doc.archived_at) if doc.archived_at else None,
         "trashed_at": str(doc.trashed_at) if doc.trashed_at else None,
         "compressed_at": str(doc.compressed_at) if doc.compressed_at else None,
+        "organization_id": doc.organization_id,
     }
 
 
@@ -140,7 +142,16 @@ def _json_or_none(raw: Optional[str]):
 # Document CRUD
 # ---------------------------------------------------------------------------
 
-@router.get("/documents", summary="List documents", description="Return a paginated list of documents in the current organization. Filter by status, classification, entity, or free-text search.")
+@router.get(
+    "/documents",
+    summary="List documents",
+    description=(
+        "Return a paginated list of documents in the current organization. "
+        "Filter by status, classification, entity, or free-text search.  Pass "
+        "`across_orgs=true` to include documents from every organization the "
+        "current user is a member of (Phase 6 cross-org search)."
+    ),
+)
 async def list_documents(
     status: Optional[str] = None,
     mode: Optional[str] = None,
@@ -149,6 +160,7 @@ async def list_documents(
     search: Optional[str] = None,
     archived: Optional[str] = Query(None, description="'true' = only archived, 'false' = exclude archived"),
     trashed: Optional[str] = Query(None, description="'true' = only trashed"),
+    across_orgs: bool = Query(False, description="Return documents from every org the user is a member of"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     user: User = Depends(get_current_user),
@@ -172,7 +184,20 @@ async def list_documents(
         # --- Fix 4: build shared filter conditions for count + data queries ----------
         # Collecting conditions as a list lets us apply identical filters to both
         # COUNT(id) and the paginated SELECT without materialising a subquery.
-        conditions = [Document.organization_id == user.organization_id]
+        if across_orgs:
+            org_ids = [
+                row.organization_id
+                for row in session.exec(
+                    select(UserOrganization).where(UserOrganization.user_id == user.id)
+                ).all()
+            ]
+            if user.organization_id and user.organization_id not in org_ids:
+                org_ids.append(user.organization_id)
+            if not org_ids:
+                org_ids = [user.organization_id]
+            conditions = [Document.organization_id.in_(org_ids)]
+        else:
+            conditions = [Document.organization_id == user.organization_id]
 
         if trashed == "true":
             conditions.append(Document.trashed_at.isnot(None))
@@ -212,7 +237,23 @@ async def list_documents(
             .limit(page_size)
         ).all()
 
-        doc_payload = [_doc_to_response(d) for d in docs]
+        # When across_orgs is true, resolve organization names so the UI
+        # can display "<doc> — <org>" without an extra round-trip per row.
+        org_name_map: dict[str, str] = {}
+        if across_orgs and docs:
+            unique_org_ids = list({d.organization_id for d in docs if d.organization_id})
+            if unique_org_ids:
+                for o in session.exec(
+                    select(Organization).where(Organization.id.in_(unique_org_ids))
+                ).all():
+                    org_name_map[o.id] = o.name
+
+        doc_payload = []
+        for d in docs:
+            payload = _doc_to_response(d)
+            if across_orgs:
+                payload["organization_name"] = org_name_map.get(d.organization_id)
+            doc_payload.append(payload)
     return {"total": total, "page": page, "page_size": page_size, "documents": doc_payload}
 
 

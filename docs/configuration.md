@@ -17,7 +17,7 @@ Copy `.env.example` to `.env` before starting. The file is gitignored and never 
 
 | Key | Default | Description |
 |---|---|---|
-| `DMSAI_DB_URL` | `sqlite:///./data/dmsai.db` | SQLAlchemy database URL |
+| `DMSAI_DB_URL` | `postgresql+psycopg://dmsai:dmsai@localhost:5432/dmsai` | SQLAlchemy database URL (PostgreSQL only) |
 | `DMSAI_STORAGE_ROOT` | `./data/storage/documents` | Document file storage root |
 | `DMSAI_INBOX_DIR` | `./data/inbox` | Directory-watch input folder |
 | `DMSAI_PROCESSED_DIR` | `./data/processed` | Files moved here after ingestion |

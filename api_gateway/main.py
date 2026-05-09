@@ -53,7 +53,15 @@ _TAGS = [
     },
     {
         "name": "users",
-        "description": "User and organization management (admin/manager roles).",
+        "description": "User and organization management (admin / org_admin roles).",
+    },
+    {
+        "name": "invitations",
+        "description": (
+            "Invite-only onboarding.  Admins generate single-use tokens; recipients "
+            "redeem them via `/invite/<token>` to create their account with prebound "
+            "role and bucket permissions."
+        ),
     },
     {
         "name": "documents",
@@ -136,8 +144,10 @@ from routers.admin import router as admin_router
 from routers.collaboration import router as collaboration_router
 from routers.archive import router as archive_router
 from routers.setup import router as setup_router
+from routers.invitations import router as invitations_router
 
 app.include_router(setup_router)   # public — no auth required
+app.include_router(invitations_router)  # mixed: public redeem + admin create/list
 app.include_router(users_router)
 app.include_router(documents_router)
 app.include_router(buckets_router)

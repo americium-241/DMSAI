@@ -51,7 +51,7 @@ function CommentItem({ comment, replies, depth, currentUserId, currentUserRole, 
   const [expanded, setExpanded] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  const canModify = currentUserId === comment.user_id || currentUserRole === 'admin' || currentUserRole === 'manager';
+  const canModify = currentUserId === comment.user_id || currentUserRole === 'admin' || currentUserRole === 'org_admin' || currentUserRole === 'manager';
 
   const handleEdit = async () => {
     if (!editText.trim()) return;

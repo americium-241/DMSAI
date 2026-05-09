@@ -94,6 +94,47 @@ export interface AuthProviders {
   email_verification: boolean;
 }
 
+export interface AccessMatrixBucket {
+  bucket_id: string;
+  bucket_name: string;
+  permission: string | null;
+}
+
+export interface AccessMatrixOrg {
+  organization_id: string;
+  organization_name: string;
+  membership_role: string | null;
+  buckets: AccessMatrixBucket[];
+}
+
+export interface AccessMatrixSnapshot {
+  user_id: string;
+  email: string;
+  full_name: string;
+  home_organization_id: string;
+  matrix: AccessMatrixOrg[];
+}
+
+export interface AccessMatrixUpdate {
+  memberships?: Array<{ organization_id: string; role: string | null }>;
+  bucket_grants?: Array<{ bucket_id: string; permission: string | null }>;
+}
+
+export interface InvitationOut {
+  id: string;
+  token: string;
+  organization_id: string;
+  organization_name: string;
+  role: string;
+  invited_email: string | null;
+  full_name_hint: string | null;
+  bucket_grants: Array<{ bucket_id: string; permission: string }>;
+  expires_at: string;
+  redeemed_at: string | null;
+  created_at: string;
+  invite_url: string;
+}
+
 export interface DocumentSummary {
   id: string;
   filename: string;
@@ -287,6 +328,8 @@ export interface BucketSummary {
   states: Record<string, number>;
   total: number;
   rules?: RuleItem[];
+  organization_id?: string;
+  organization_name?: string;
 }
 
 export interface BucketDocItem {
@@ -537,10 +580,27 @@ export interface SetupStatus {
   llm_configured: boolean;
 }
 
+export interface LLMConfigPayload {
+  provider: string;
+  text_model: string;
+  vision_model?: string;
+  api_key?: string;
+  ollama_url?: string;
+  embedding_enabled?: boolean;
+  embedding_model?: string;
+}
+
 export const api = {
   // Setup (public — no auth required)
   getSetupStatus() {
     return fetch('/api/setup/status').then(r => r.json() as Promise<SetupStatus>);
+  },
+  applyLLMConfig(data: LLMConfigPayload) {
+    return request<{ status: string; provider: string; model: string }>('/setup/apply-llm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
   },
 
   // Auth
@@ -591,6 +651,80 @@ export const api = {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
+    });
+  },
+  adminCreateUser(data: {
+    email: string;
+    password: string;
+    full_name: string;
+    role: string;
+    organization_id?: string;
+  }) {
+    return request<{ status: string; id: string }>(`/admin/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  },
+  adminResetPassword(userId: string, newPassword: string) {
+    return request<{ status: string; user_id: string }>(`/admin/users/${userId}/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ new_password: newPassword }),
+    });
+  },
+  adminDeactivateUser(userId: string) {
+    return request<{ status: string; id: string }>(`/admin/users/${userId}`, {
+      method: 'DELETE',
+    });
+  },
+
+  // Invitations
+  adminListInvitations() {
+    return request<InvitationOut[]>(`/admin/invitations`);
+  },
+  adminCreateInvitation(data: {
+    organization_id?: string;
+    role: string;
+    invited_email: string;
+    full_name_hint?: string;
+    expires_in_days?: number;
+    bucket_grants?: Array<{ bucket_id: string; permission: string }>;
+  }) {
+    return request<InvitationOut>(`/admin/invitations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  },
+  adminRevokeInvitation(invitationId: string) {
+    return request<{ status: string; id: string }>(`/admin/invitations/${invitationId}`, {
+      method: 'DELETE',
+    });
+  },
+  lookupInvitation(token: string) {
+    return request<InvitationOut>(`/invitations/${token}`);
+  },
+  redeemInvitation(token: string, password: string, full_name: string) {
+    return request<{ access_token: string; token_type: string; user: UserInfo }>(
+      `/invitations/${token}/redeem`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password, full_name }),
+      },
+    );
+  },
+
+  // Phase 5 — per-user permissions matrix
+  getUserAccessMatrix(userId: string) {
+    return request<AccessMatrixSnapshot>(`/admin/users/${userId}/access-matrix`);
+  },
+  updateUserAccessMatrix(userId: string, body: AccessMatrixUpdate) {
+    return request<{ status: string; user_id: string }>(`/admin/users/${userId}/access-matrix`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
     });
   },
 
@@ -702,8 +836,9 @@ export const api = {
   },
 
   // Buckets
-  getBuckets() {
-    return request<BucketSummary[]>('/buckets');
+  getBuckets(opts?: { acrossOrgs?: boolean }) {
+    const qs = opts?.acrossOrgs ? '?across_orgs=true' : '';
+    return request<BucketSummary[]>(`/buckets${qs}`);
   },
   getBucket(id: string) {
     return request<BucketSummary>(`/buckets/${id}`);
