@@ -56,6 +56,17 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
+# Resolve relative path env vars to absolute (relative to project root) so that
+# all child processes receive absolute paths regardless of their working directory.
+# Without this, nodes running in nodes/XXX_node/ would misinterpret
+# DMSAI_STORAGE_ROOT=./data/storage/documents as being relative to *their* CWD,
+# which would cause "file not found" errors when subsequent nodes try to read the
+# storage path saved in the DB.
+for _path_key in ("DMSAI_STORAGE_ROOT", "DMSAI_INBOX_DIR", "DMSAI_PROCESSED_DIR", "DMSAI_MODELS_DIR"):
+    _val = os.environ.get(_path_key, "")
+    if _val and not os.path.isabs(_val):
+        os.environ[_path_key] = str((ROOT / _val).resolve())
+
 SERVICES: list[dict] = [
     {"name": "ingestion",          "port": 8010, "kind": "node", "dir": "nodes/ingestion_node"},
     {"name": "conversion",         "port": 8011, "kind": "node", "dir": "nodes/conversion_node"},
@@ -223,6 +234,10 @@ def start_service(svc: dict) -> None:
     LOG_DIR.mkdir(exist_ok=True)
     log = _log_path(name)
 
+    # Ensure per-node logs/ dir exists (decentraflow writes internal task logs there)
+    if kind == "node":
+        (work_dir / "logs").mkdir(exist_ok=True)
+
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
 
     if kind == "node":
@@ -252,12 +267,14 @@ def start_service(svc: dict) -> None:
             CREATE_NO_WINDOW = 0x08000000
             subprocess.Popen(
                 cmd, shell=True, cwd=str(work_dir), env=env,
+                stdin=subprocess.DEVNULL,
                 stdout=lf, stderr=subprocess.STDOUT,
                 creationflags=CREATE_NO_WINDOW,
             )
         else:
             subprocess.Popen(
                 cmd, shell=True, cwd=str(work_dir), env=env,
+                stdin=subprocess.DEVNULL,
                 stdout=lf, stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
@@ -447,12 +464,22 @@ def cmd_setup(silent: bool = False) -> bool:
         changed = True
 
     # Create required data directories
-    for d in ["data/inbox", "data/processed", "data/storage/documents", "data/models"]:
+    for d in ["data/inbox", "data/processed", "data/storage/documents", "data/models", "logs"]:
         path = ROOT / d
         if not path.exists():
             path.mkdir(parents=True, exist_ok=True)
             print(f"  {_c('MKDIR', CYAN)}  {d}")
             changed = True
+
+    # Create per-node logs/ subdirectories (decentraflow writes internal logs there)
+    nodes_dir = ROOT / "nodes"
+    if nodes_dir.exists():
+        for node_dir in nodes_dir.iterdir():
+            if node_dir.is_dir():
+                node_logs = node_dir / "logs"
+                if not node_logs.exists():
+                    node_logs.mkdir(parents=True, exist_ok=True)
+                    changed = True
 
     # PostgreSQL bootstrap — always attempted, idempotent.  Probes localhost,
     # installs natively if needed (winget / brew / apt / dnf), creates the

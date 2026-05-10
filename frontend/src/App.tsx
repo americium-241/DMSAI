@@ -44,7 +44,8 @@ function AppRoutes() {
   const [setupChecked, setSetupChecked] = useState(false);
 
   // Check first-run status once (before auth resolves) so we redirect before
-  // the normal login redirect kicks in.
+  // the normal login redirect kicks in.  Retries up to 10 times (5 s total)
+  // so a slow backend startup doesn't cause a missed setup redirect.
   useEffect(() => {
     if (loading) return;
     // Skip check if user is already authenticated (setup must have run before)
@@ -56,15 +57,31 @@ function AppRoutes() {
       setSetupChecked(true);
       return;
     }
-    api.getSetupStatus().then(status => {
-      if (!status.completed) {
-        navigate('/setup', { replace: true });
-      }
-    }).catch(() => {
-      // If the check fails (network / backend not ready) just proceed normally
-    }).finally(() => {
-      setSetupChecked(true);
-    });
+
+    let cancelled = false;
+    const MAX_ATTEMPTS = 10;
+    const DELAY_MS = 500;
+
+    const tryCheck = (attempt: number) => {
+      api.getSetupStatus().then(status => {
+        if (cancelled) return;
+        if (!status.completed) {
+          navigate('/setup', { replace: true });
+        }
+        setSetupChecked(true);
+      }).catch(() => {
+        if (cancelled) return;
+        if (attempt < MAX_ATTEMPTS) {
+          setTimeout(() => tryCheck(attempt + 1), DELAY_MS);
+        } else {
+          // Backend still unreachable after retries — show login page
+          setSetupChecked(true);
+        }
+      });
+    };
+
+    tryCheck(1);
+    return () => { cancelled = true; };
   }, [loading, user]);
 
   if (loading || !setupChecked) {

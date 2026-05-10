@@ -65,7 +65,7 @@ def _ensure_postgres_in_env(env_file: Path) -> None:
 
 def main() -> None:
     root = Path(__file__).resolve().parent.parent
-    total = 6
+    total = 7
 
     print()
     print("=== DMSAI Native Installer ===")
@@ -102,8 +102,16 @@ def main() -> None:
             print(f"  {node_dir.name}")
             _run(sys.executable, "-m", "pip", "install", "-r", str(req), cwd=root)
 
-    # 5 — Frontend
-    _step(5, total, "Frontend dependencies (npm install)")
+    # 4b — LiteLLM proxy (separate extra that is NOT in node requirements)
+    _step(5, total, "LiteLLM proxy dependencies")
+    litellm_req = root / "requirements-litellm.txt"
+    if litellm_req.exists():
+        _run(sys.executable, "-m", "pip", "install", "-r", str(litellm_req), cwd=root)
+    else:
+        _run(sys.executable, "-m", "pip", "install", "litellm[proxy]>=1.40", cwd=root)
+
+    # 6 — Frontend
+    _step(6, total, "Frontend dependencies (npm install)")
     npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
     if not shutil.which(npm_cmd) and not shutil.which("npm"):
         print("  WARNING: npm not found. Skipping frontend install.")
@@ -111,8 +119,8 @@ def main() -> None:
     else:
         _run(npm_cmd if shutil.which(npm_cmd) else "npm", "install", cwd=root / "frontend")
 
-    # 6 — PostgreSQL (always)
-    _step(6, total, "PostgreSQL native install + database provisioning")
+    # 7 — PostgreSQL (always)
+    _step(7, total, "PostgreSQL native install + database provisioning")
     sys.path.insert(0, str(root / "scripts"))
     from postgres_setup import bootstrap, platform_install_hint  # noqa: E402
 

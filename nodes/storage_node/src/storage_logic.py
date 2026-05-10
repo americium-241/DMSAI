@@ -1,17 +1,26 @@
 import os
 import base64
 from datetime import datetime
+from pathlib import Path
 
 import yaml
 from sqlmodel import select
 
 from dmsai_models import Document, get_session, init_db, record_pipeline_event
 
-with open("config/local_config.yaml", "r") as _f:
+_NODE_DIR = Path(__file__).resolve().parent.parent  # nodes/storage_node/
+
+with open(_NODE_DIR / "config" / "local_config.yaml", "r") as _f:
     _config = yaml.safe_load(_f)
 
-STORAGE_ROOT = os.environ.get("DMSAI_STORAGE_ROOT", _config["storage_root"])
-SYMLINK_ROOT = _config.get("symlink_root", "")
+# Prefer env var (set to absolute path by dmsai.py before spawning nodes).
+# Fall back to the config file value, resolved relative to the node dir so
+# the path is always absolute and consistent across nodes.
+_raw_root = os.environ.get("DMSAI_STORAGE_ROOT") or _config["storage_root"]
+STORAGE_ROOT = str(Path(_raw_root).resolve() if not os.path.isabs(_raw_root) else Path(_raw_root))
+
+_raw_sym = _config.get("symlink_root", "")
+SYMLINK_ROOT = str(Path(_raw_sym).resolve() if _raw_sym and not os.path.isabs(_raw_sym) else (_raw_sym or ""))
 
 
 def _ensure_dir(path: str):

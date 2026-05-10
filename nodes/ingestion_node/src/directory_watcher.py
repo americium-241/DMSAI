@@ -103,11 +103,21 @@ class DirectoryWatcher:
 
     @property
     def _legacy_watch_dir(self) -> str:
-        return self._legacy_get_cfg("ingestion_watch_directory", "watch_directory", "./data/inbox")
+        val = self._legacy_get_cfg(
+            "ingestion_watch_directory", "watch_directory",
+            os.environ.get("DMSAI_INBOX_DIR", "./data/inbox"),
+        )
+        # Resolve relative paths against CWD at call time; dmsai.py already
+        # converts DMSAI_INBOX_DIR to absolute, so this is only a safety net.
+        return os.path.abspath(val)
 
     @property
     def _legacy_processed_dir(self) -> str:
-        return self._legacy_get_cfg("ingestion_processed_directory", "processed_directory", "./data/processed")
+        val = self._legacy_get_cfg(
+            "ingestion_processed_directory", "processed_directory",
+            os.environ.get("DMSAI_PROCESSED_DIR", "./data/processed"),
+        )
+        return os.path.abspath(val)
 
     @property
     def _legacy_poll_interval(self) -> float:
