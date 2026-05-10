@@ -14,6 +14,7 @@ from dmsai_models import (
     Bucket, BucketRule, BucketDocument, BucketPermission,
     Document, DocumentField, DocumentEntity, Entity, EntityField,
     Organization, SystemConfig, User, UserOrganization, get_session, init_db,
+    resolve_storage_path,
 )
 from auth import get_current_user, require_manager, require_org_admin  # noqa: F401
 
@@ -703,10 +704,11 @@ def _get_field_value(session, doc: Document, field_spec: str) -> str | None:
 
 
 async def _vision_rule_matches(doc: Document, rule: BucketRule) -> bool:
-    if not doc.storage_path or not os.path.exists(doc.storage_path):
+    abs_path = resolve_storage_path(doc.storage_path)
+    if not abs_path or not os.path.exists(abs_path):
         return False
     try:
-        image_b64 = _render_first_page_for_vision(doc.storage_path)
+        image_b64 = _render_first_page_for_vision(abs_path)
         prompt = VISION_RULE_PROMPT.format(
             rule=rule.value,
             filename=doc.filename,

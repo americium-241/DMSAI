@@ -19,6 +19,7 @@ from dmsai_models import (
     DocumentClassLabel, PipelineEvent, DocumentEmbedding,
     Correction, BucketDocument, User, SystemConfig, Organization,
     get_session, init_db,
+    resolve_storage_path, to_relative_storage_path,
 )
 from auth import get_current_user
 
@@ -186,15 +187,13 @@ async def permanent_delete_document(document_id: str, user: User = Depends(get_c
         if not doc.trashed_at:
             raise HTTPException(status_code=400, detail="Document must be in trash before permanent deletion")
 
-        # Delete physical file
-        storage_path = doc.storage_path
+        # Delete physical file (resolve relative DB path to absolute)
+        storage_path = resolve_storage_path(doc.storage_path)
         if storage_path:
             for suffix in ("", ".gz"):
                 path = storage_path + suffix
                 if os.path.isfile(path):
                     os.remove(path)
-            if os.path.isfile(storage_path):
-                os.remove(storage_path)
 
         # Cascade-delete every table that has a FK on document.id.  With
         # PRAGMA foreign_keys=ON (SQLite) and Postgres' default behaviour,
@@ -387,19 +386,20 @@ async def compact_storage(user: User = Depends(get_current_user)):
         ).all()
 
         for doc in archived_docs:
-            path = doc.storage_path
+            path = resolve_storage_path(doc.storage_path)
             if not path or not os.path.isfile(path):
                 skipped.append(doc.id)
                 continue
             if path.endswith(".gz"):
                 already_done.append(doc.id)
                 continue
-            gz_path = path + ".gz"
+            gz_abs_path = path + ".gz"
             try:
-                with open(path, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:
+                with open(path, "rb") as f_in, gzip.open(gz_abs_path, "wb") as f_out:
                     shutil.copyfileobj(f_in, f_out)
                 os.remove(path)
-                doc.storage_path = gz_path
+                # Store the compressed path as relative too
+                doc.storage_path = to_relative_storage_path(gz_abs_path)
                 doc.compressed_at = datetime.utcnow()
                 session.add(doc)
                 _record_audit(session, doc.id, user.id, "compressed",

@@ -1,0 +1,34 @@
+fix: fresh-install reliability — litellm proxy, node log dirs, absolute storage paths, CLI stdin lock
+
+- Add requirements-litellm.txt with litellm[proxy]>=1.40 and install it in
+  scripts/install.py step 5; without the [proxy] extra the litellm CLI server
+  fails to start with missing dependency errors
+
+- dmsai.py cmd_setup: create logs/ inside each node directory (decentraflow
+  writes internal task logs there and crashes if the directory is absent)
+
+- dmsai.py start_service: always create the per-node logs/ dir just before
+  spawning the process so it exists even when setup was skipped
+
+- dmsai.py: resolve DMSAI_STORAGE_ROOT / DMSAI_INBOX_DIR / DMSAI_PROCESSED_DIR /
+  DMSAI_MODELS_DIR to absolute paths (relative to project root) immediately after
+  loading .env; without this the storage node, running in nodes/storage_node/,
+  would save documents to a path like nodes/storage_node/data/storage/... and the
+  OCR node (running in nodes/ocr_node/) would fail to find those files
+
+- nodes/storage_node/src/storage_logic.py: always resolve STORAGE_ROOT to
+  absolute; open config using __file__-based path instead of CWD-relative string
+  so the node can be started from any working directory
+
+- nodes/ingestion_node/src/directory_watcher.py: resolve legacy watch/processed
+  dirs to absolute paths; prefer DMSAI_INBOX_DIR / DMSAI_PROCESSED_DIR env vars
+  as fallbacks before the YAML defaults
+
+- dmsai.py Popen: add stdin=subprocess.DEVNULL to both Windows and POSIX branches
+  so child processes never inherit the CLI terminal's stdin handle — this was
+  causing the interactive prompt to appear frozen after dmsai start on some
+  terminal emulators (Anaconda Prompt, VS Code integrated terminal)
+
+- frontend/src/App.tsx: retry getSetupStatus up to 10 times (500 ms apart) when
+  the backend is not yet ready; previously a single failed request would silently
+  fall through to the login page instead of the setup wizard on first boot

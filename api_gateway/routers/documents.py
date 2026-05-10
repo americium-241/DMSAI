@@ -19,6 +19,7 @@ from dmsai_models import (
     Correction, PipelineEvent,
     DocumentAuditLog, DocumentVersion,
     get_session, init_db,
+    resolve_storage_path,
 )
 from auth import get_current_user
 
@@ -272,9 +273,9 @@ async def get_document_pdf(document_id: str, user: User = Depends(get_current_us
         doc = _get_doc_or_404(session, document_id, user)
         if not doc.storage_path:
             raise HTTPException(status_code=404, detail="Document PDF not found")
-        if not os.path.exists(doc.storage_path):
+        storage_path = resolve_storage_path(doc.storage_path)
+        if not os.path.exists(storage_path):
             raise HTTPException(status_code=404, detail="PDF file missing from storage")
-        storage_path = doc.storage_path
         filename = doc.filename
     return FileResponse(storage_path, media_type="application/pdf", filename=f"{filename}.pdf")
 

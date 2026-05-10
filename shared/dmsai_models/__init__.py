@@ -32,6 +32,7 @@ from .models import (
 from .connection import get_engine, get_session, init_db
 from .dialect_utils import date_str, year_week_str
 from .pipeline_events import record_pipeline_event
+from .storage_utils import resolve_storage_path, to_relative_storage_path
 from .confidence import (
     compute_item_confidence,
     compute_pipeline_confidence,
@@ -84,6 +85,8 @@ __all__ = [
     "date_str",
     "year_week_str",
     "record_pipeline_event",
+    "resolve_storage_path",
+    "to_relative_storage_path",
     "compute_item_confidence",
     "compute_pipeline_confidence",
     "confidence_level",

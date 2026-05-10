@@ -7,6 +7,7 @@ import yaml
 from sqlmodel import select
 
 from dmsai_models import Document, get_session, init_db, record_pipeline_event
+from dmsai_models.storage_utils import to_relative_storage_path
 
 _NODE_DIR = Path(__file__).resolve().parent.parent  # nodes/storage_node/
 
@@ -14,8 +15,7 @@ with open(_NODE_DIR / "config" / "local_config.yaml", "r") as _f:
     _config = yaml.safe_load(_f)
 
 # Prefer env var (set to absolute path by dmsai.py before spawning nodes).
-# Fall back to the config file value, resolved relative to the node dir so
-# the path is always absolute and consistent across nodes.
+# Fall back to the config file value resolved from the node directory.
 _raw_root = os.environ.get("DMSAI_STORAGE_ROOT") or _config["storage_root"]
 STORAGE_ROOT = str(Path(_raw_root).resolve() if not os.path.isabs(_raw_root) else Path(_raw_root))
 
@@ -69,20 +69,25 @@ async def process_document(payload: dict) -> dict:
     record_pipeline_event(doc_id, "storage", "started")
     pdf_bytes = base64.b64decode(payload["file_bytes"])
 
-    storage_path = save_to_filesystem(doc_id, pdf_bytes)
-    symlink_path = create_symlink(doc_id, storage_path)
+    abs_storage_path = save_to_filesystem(doc_id, pdf_bytes)
+    symlink_path = create_symlink(doc_id, abs_storage_path)
+
+    # Store a portable relative path in the DB so the database is not
+    # tied to this machine's directory layout.  The pipeline payload keeps
+    # the absolute path so downstream nodes can open the file directly.
+    rel_storage_path = to_relative_storage_path(abs_storage_path)
 
     with get_session() as session:
         doc = session.exec(select(Document).where(Document.id == doc_id)).first()
         if doc:
-            doc.storage_path = storage_path
+            doc.storage_path = rel_storage_path
             doc.file_size_bytes = len(pdf_bytes)
             doc.status = "STORED"
             doc.updated_at = datetime.utcnow()
             session.commit()
 
     del payload["file_bytes"]
-    payload["storage_path"] = storage_path
+    payload["storage_path"] = abs_storage_path  # absolute for in-flight pipeline use
     if symlink_path:
         payload["symlink_path"] = symlink_path
     payload["history"] = payload.get("history", []) + ["storage_completed"]
